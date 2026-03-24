@@ -1,0 +1,18 @@
+# Build output
+dist/
+*.exe
+nerdyagent
+nerdyagent-*
+
+# Config with secrets
+config.json
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
