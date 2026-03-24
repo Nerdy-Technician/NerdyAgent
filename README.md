@@ -1,13 +1,13 @@
 # NerdyAgent
 
-NerdyAgent is the standalone, publicly distributable RMM agent for [NerdyRMM](https://github.com/OWNER/NerdyRMM). Install it on any Linux or Windows machine to connect it to your NerdyRMM server for remote monitoring and management.
+NerdyAgent is the standalone, publicly distributable RMM agent for [NerdyRMM](https://github.com/Nerdy-Technician/NerdyRMM). Install it on any Linux or Windows machine to connect it to your NerdyRMM server for remote monitoring and management.
 
 ## Quick Install
 
 ### Linux (one-liner)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/NerdyAgent/main/scripts/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/Nerdy-Technician/NerdyAgent/main/scripts/install.sh | \
   NRMM_SERVER=https://your-server.com NRMM_TOKEN=your-enrollment-token bash
 ```
 
@@ -70,7 +70,7 @@ The config file path can be overridden via the `NRMM_AGENT_CONFIG` environment v
 Requirements: Go 1.24+
 
 ```bash
-git clone https://github.com/OWNER/NerdyAgent.git
+git clone https://github.com/Nerdy-Technician/NerdyAgent.git
 cd NerdyAgent
 go build -o nerdyagent ./cmd/agent
 ```
