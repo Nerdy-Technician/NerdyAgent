@@ -9,13 +9,18 @@ on:
 
 jobs:
   build:
-    name: Build binaries
+    name: Build & test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
 
       - name: Build all platforms
         run: make build-all
@@ -23,24 +28,37 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nerdyagent-binaries
+          name: nerdyrmm-agent-binaries
           path: dist/
+          retention-days: 7
 
   release:
     name: Release
     runs-on: ubuntu-latest
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-      - run: make build-all
-      - name: Create Release
+          cache: true
+
+      - name: Build release binaries
+        run: make build-all
+
+      - name: Write agent-version.txt
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo -n "$VERSION" > dist/agent-version.txt
+          echo "Building release for version $VERSION"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: true
