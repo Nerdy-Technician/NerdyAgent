@@ -47,18 +47,34 @@ jobs:
           go-version: '1.24'
           cache: true
 
-      - name: Build release binaries
-        run: make build-all
-
-      - name: Write agent-version.txt
+      - name: Set version from tag
+        id: version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          echo -n "$VERSION" > dist/agent-version.txt
-          echo "Building release for version $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify config.go matches tag
+        run: |
+          CFG_VERSION=$(grep -oP '(?<=AgentVersion:\s+")[^"]+' internal/config/config.go || true)
+          TAG_VERSION="${{ steps.version.outputs.VERSION }}"
+          if [ -n "$CFG_VERSION" ] && [ "$CFG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::warning::config.go AgentVersion ($CFG_VERSION) does not match tag ($TAG_VERSION)"
+          fi
+
+      - name: Build release binaries
+        run: make build-all
+        env:
+          VERSION: ${{ steps.version.outputs.TAG }}
+
+      - name: Write agent-version.txt
+        run: echo -n "${{ steps.version.outputs.VERSION }}" > dist/agent-version.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: NerdyAgent ${{ steps.version.outputs.TAG }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
