@@ -22,7 +22,7 @@ func Load(path string) (Config, error) {
 	cfg := Config{
 		ServerURL:      "http://localhost:8080",
 		CheckinEvery:   30 * time.Second,
-		AgentVersion:   "0.3.5",
+		AgentVersion:   "0.3.7",
 		JobTimeoutSec:  120,
 		OutputMaxBytes: 131072,
 	}
