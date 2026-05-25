@@ -35,7 +35,7 @@ func maybeRunAsWindowsService(cfgPath string) (bool, error) {
 	if !isService {
 		return false, nil
 	}
-	if err := svc.Run("NerdyAgent", &nerdyService{cfgPath: cfgPath}); err != nil {
+	if err := svc.Run("NerdyRMMAgent", &nerdyService{cfgPath: cfgPath}); err != nil {
 		return true, err
 	}
 	return true, nil

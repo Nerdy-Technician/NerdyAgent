@@ -1,4 +1,4 @@
-module github.com/nerdyagent/agent
+module github.com/nerdyrmm/agent
 
 go 1.24
 

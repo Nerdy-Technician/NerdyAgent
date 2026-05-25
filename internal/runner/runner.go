@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nerdyagent/agent/internal/protocol"
+	"github.com/nerdyrmm/agent/internal/protocol"
 )
 
 type Config struct {
@@ -58,14 +58,6 @@ func Run(job protocol.Job, cfg Config) (status, output string) {
 	default:
 		return "failed", "unsupported job type"
 	}
-}
-
-// psSingleQuoteEscape escapes a string for safe use inside PowerShell single-quoted strings.
-// It escapes backticks (PowerShell's escape character) first, then single quotes.
-func psSingleQuoteEscape(s string) string {
-	s = strings.ReplaceAll(s, "`", "``")
-	s = strings.ReplaceAll(s, "'", "''")
-	return s
 }
 
 func removeSoftware(ctx context.Context, payload map[string]interface{}) (string, string) {
@@ -206,7 +198,7 @@ func execScript(ctx context.Context, script, language string, max int) (string, 
 	case "python":
 		ext = ".py"
 	}
-	tmp, err := os.CreateTemp("", "nerdyagent-script-*"+ext)
+	tmp, err := os.CreateTemp("", "nrmm-script-*"+ext)
 	if err != nil {
 		return "failed", err.Error()
 	}
@@ -313,9 +305,9 @@ func updateAgentBinary(ctx context.Context, payload map[string]interface{}, cfg 
 	serviceName = strings.TrimSpace(serviceName)
 	if serviceName == "" {
 		if runtime.GOOS == "windows" {
-			serviceName = "NerdyAgent"
+			serviceName = "NerdyRMMAgent"
 		} else {
-			serviceName = "nerdyagent"
+			serviceName = "nerdyrmm-agent"
 		}
 	}
 
@@ -419,14 +411,14 @@ func updateAgentBinaryWindows(ctx context.Context, payload map[string]interface{
 		return "failed", err.Error()
 	}
 
-	psScriptPath := filepath.Join(os.TempDir(), "nerdyagent-self-update.ps1")
+	psScriptPath := filepath.Join(os.TempDir(), "nerdyrmm-agent-self-update.ps1")
 	psScript := fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
 Start-Sleep -Seconds 2
 Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 Move-Item -Path '%s' -Destination '%s' -Force
 Start-Service -Name '%s'
-`, psSingleQuoteEscape(serviceName), psSingleQuoteEscape(tmpPath), psSingleQuoteEscape(exePath), psSingleQuoteEscape(serviceName))
+`, serviceName, strings.ReplaceAll(tmpPath, `'`, `''`), strings.ReplaceAll(exePath, `'`, `''`), serviceName)
 	if err := os.WriteFile(psScriptPath, []byte(psScript), 0o600); err != nil {
 		return "failed", err.Error()
 	}
@@ -575,8 +567,8 @@ elif command -v service >/dev/null 2>&1; then
   service %s restart
 else
   pkill -f %s >/dev/null 2>&1 || true
-  nohup %s >/tmp/nerdyagent-manual-restart.log 2>&1 &
-fi) >/tmp/nerdyagent-update.log 2>&1 &`, pathExport, service, service, exe, exe)
+  nohup %s >/tmp/nerdyrmm-agent-manual-restart.log 2>&1 &
+fi) >/tmp/nerdyrmm-agent-update.log 2>&1 &`, pathExport, service, service, exe, exe)
 }
 
 // shellEscape wraps values for safe use in shell snippets.
@@ -624,26 +616,26 @@ if ! command -v Xvfb >/dev/null 2>&1; then
 fi
 if [ "$need_install" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get update -y >/tmp/nerdyagent-vnc-install.log 2>&1
-    DEBIAN_FRONTEND=noninteractive apt-get install -y x11vnc xvfb >>/tmp/nerdyagent-vnc-install.log 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get update -y >/tmp/nerdyrmm-vnc-install.log 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y x11vnc xvfb >>/tmp/nerdyrmm-vnc-install.log 2>&1
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y x11vnc xorg-x11-server-Xvfb >/tmp/nerdyagent-vnc-install.log 2>&1
+    dnf install -y x11vnc xorg-x11-server-Xvfb >/tmp/nerdyrmm-vnc-install.log 2>&1
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y x11vnc xorg-x11-server-Xvfb >/tmp/nerdyagent-vnc-install.log 2>&1
+    yum install -y x11vnc xorg-x11-server-Xvfb >/tmp/nerdyrmm-vnc-install.log 2>&1
   elif command -v pacman >/dev/null 2>&1; then
-    pacman -Sy --noconfirm x11vnc xorg-server-xvfb >/tmp/nerdyagent-vnc-install.log 2>&1
+    pacman -Sy --noconfirm x11vnc xorg-server-xvfb >/tmp/nerdyrmm-vnc-install.log 2>&1
   else
     echo "desktop prerequisites are missing and no supported package manager was detected"
     exit 99
   fi
   if ! command -v x11vnc >/dev/null 2>&1 || ! command -v Xvfb >/dev/null 2>&1; then
     echo "desktop prerequisite install failed (need x11vnc + Xvfb)"
-    tail -n 60 /tmp/nerdyagent-vnc-install.log 2>/dev/null || true
+    tail -n 60 /tmp/nerdyrmm-vnc-install.log 2>/dev/null || true
     exit 99
   fi
 fi
-mkdir -p /etc/nerdyagent || true
-x11vnc -storepasswd "%s" /etc/nerdyagent/vnc.pass
+mkdir -p /etc/nerdyrmm-agent || true
+x11vnc -storepasswd "%s" /etc/nerdyrmm-agent/vnc.pass
 if [ $? -ne 0 ]; then
   echo "failed to write x11vnc password file"
   exit 97
@@ -669,21 +661,21 @@ if [ -z "$DISPLAY_CAND" ]; then
 fi
 
 echo "Using display: $DISPLAY_CAND"
-nohup x11vnc -localhost -display "$DISPLAY_CAND" -auth guess -rfbport %d -forever -shared -rfbauth /etc/nerdyagent/vnc.pass -noxdamage -o /var/log/nerdyagent-x11vnc.log >/dev/null 2>&1 &
+nohup x11vnc -localhost -display "$DISPLAY_CAND" -auth guess -rfbport %d -forever -shared -rfbauth /etc/nerdyrmm-agent/vnc.pass -noxdamage -o /var/log/nerdyrmm-x11vnc.log >/dev/null 2>&1 &
 sleep 2
 if ! pgrep -x x11vnc >/dev/null 2>&1; then
-  nohup x11vnc -localhost -create -rfbport %d -forever -shared -rfbauth /etc/nerdyagent/vnc.pass -noxdamage -o /var/log/nerdyagent-x11vnc.log >/dev/null 2>&1 &
+  nohup x11vnc -localhost -create -rfbport %d -forever -shared -rfbauth /etc/nerdyrmm-agent/vnc.pass -noxdamage -o /var/log/nerdyrmm-x11vnc.log >/dev/null 2>&1 &
   sleep 2
   if ! pgrep -x x11vnc >/dev/null 2>&1; then
     echo "x11vnc process did not start"
-    tail -n 80 /var/log/nerdyagent-x11vnc.log 2>/dev/null || true
+    tail -n 80 /var/log/nerdyrmm-x11vnc.log 2>/dev/null || true
     exit 98
   fi
 fi
 if command -v ss >/dev/null 2>&1; then
   if ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":%d$"; then
     echo "x11vnc process is running but no localhost listener on port %d"
-    tail -n 80 /var/log/nerdyagent-x11vnc.log 2>/dev/null || true
+    tail -n 80 /var/log/nerdyrmm-x11vnc.log 2>/dev/null || true
     exit 98
   fi
 fi
@@ -805,6 +797,14 @@ func toInt(v interface{}) int {
 	default:
 		return 0
 	}
+}
+
+// psSingleQuoteEscape escapes a string for safe use inside PowerShell single-quoted strings.
+// Single quotes are doubled, and backticks (PS escape char) are doubled to prevent injection.
+func psSingleQuoteEscape(s string) string {
+	s = strings.ReplaceAll(s, "`", "``")
+	s = strings.ReplaceAll(s, "'", "''")
+	return s
 }
 
 func randomHexToken(n int) (string, error) {

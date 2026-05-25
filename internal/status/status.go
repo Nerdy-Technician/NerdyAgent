@@ -14,7 +14,7 @@ type Logger struct {
 
 func New(dir string) *Logger {
 	if dir == "" {
-		dir = "/etc/nerdyagent"
+		dir = "/etc/nerdyrmm-agent"
 	}
 	_ = os.MkdirAll(dir, 0o755)
 	return &Logger{path: filepath.Join(dir, "status.log")}

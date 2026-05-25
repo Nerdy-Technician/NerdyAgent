@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nerdyagent/agent/internal/config"
-	"github.com/nerdyagent/agent/internal/protocol"
-	"github.com/nerdyagent/agent/internal/runner"
-	"github.com/nerdyagent/agent/internal/status"
-	"github.com/nerdyagent/agent/internal/sysinfo"
-	"github.com/nerdyagent/agent/internal/tunnel"
+	"github.com/nerdyrmm/agent/internal/config"
+	"github.com/nerdyrmm/agent/internal/protocol"
+	"github.com/nerdyrmm/agent/internal/runner"
+	"github.com/nerdyrmm/agent/internal/status"
+	"github.com/nerdyrmm/agent/internal/sysinfo"
+	"github.com/nerdyrmm/agent/internal/tunnel"
 )
 
 type agentFileLog struct {
@@ -77,13 +77,13 @@ func main() {
 }
 
 func defaultConfigPath() string {
-	cfgPath := "/etc/nerdyagent/config.json"
+	cfgPath := "/etc/nerdyrmm-agent/config.json"
 	if runtime.GOOS == "windows" {
-		programDataDir := os.Getenv("ProgramData")
-		if strings.TrimSpace(programDataDir) == "" {
-			programDataDir = `C:\ProgramData`
+		programFilesDir := os.Getenv("ProgramFiles")
+		if strings.TrimSpace(programFilesDir) == "" {
+			programFilesDir = `C:\Program Files`
 		}
-		cfgPath = filepath.Join(programDataDir, "NerdyAgent", "config.json")
+		cfgPath = filepath.Join(programFilesDir, "Nerdy RMM", "config.json")
 	}
 	return cfgPath
 }

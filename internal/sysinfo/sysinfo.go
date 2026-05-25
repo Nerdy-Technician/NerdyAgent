@@ -702,7 +702,7 @@ func publicIPSnapshot() string {
 		if err != nil {
 			continue
 		}
-		req.Header.Set("User-Agent", "NerdyAgent/0.3.5")
+		req.Header.Set("User-Agent", "NerdyRMM-Agent/0.3.5")
 		resp, err := client.Do(req)
 		if err != nil {
 			continue

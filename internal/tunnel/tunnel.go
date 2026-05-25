@@ -18,7 +18,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
-	"github.com/nerdyagent/agent/internal/config"
+	"github.com/nerdyrmm/agent/internal/config"
 )
 
 type shellMessage struct {
