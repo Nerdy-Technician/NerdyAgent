@@ -88,6 +88,49 @@ func defaultConfigPath() string {
 	return cfgPath
 }
 
+func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		cfg, err := config.Load(cfgPath)
+		if err != nil || strings.TrimSpace(cfg.ServerURL) == "" {
+			continue
+		}
+		versionURL := strings.TrimRight(cfg.ServerURL, "/") + "/downloads/agent-version.txt"
+		resp, err := http.Get(versionURL) //nolint:gosec
+		if err != nil {
+			continue
+		}
+		body, err := func() (string, error) {
+			defer resp.Body.Close()
+			b := make([]byte, 64)
+			n, _ := resp.Body.Read(b)
+			return strings.TrimSpace(string(b[:n])), nil
+		}()
+		if err != nil || body == "" || resp.StatusCode != 200 {
+			continue
+		}
+		latestVersion := body
+		if runner.CompareVersions(cfg.AgentVersion, latestVersion) >= 0 {
+			continue
+		}
+		fileLog.writef("version watcher: current=%s latest=%s — queuing self-update", cfg.AgentVersion, latestVersion)
+		payload := map[string]interface{}{
+			"version":     latestVersion,
+			"binaryUrl":   strings.TrimRight(cfg.ServerURL, "/") + "/downloads/" + runner.AgentBinaryFilename(),
+			"serviceName": "nerdyrmm-agent",
+		}
+		status, output := runner.RunUpdateAgent(payload, runner.Config{
+			TimeoutSec:     300,
+			OutputMaxBytes: 65536,
+			CurrentVersion: cfg.AgentVersion,
+			ConfigPath:     cfgPath,
+			ServerURL:      cfg.ServerURL,
+		})
+		fileLog.writef("version watcher self-update result: status=%s output=%s", status, output)
+	}
+}
+
 func runAgent(cfgPath string, fileLog *agentFileLog) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -95,6 +138,9 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 		panic(err)
 	}
 	fileLog.writef("config loaded; server=%s deviceId=%d", cfg.ServerURL, cfg.DeviceID)
+
+	go runVersionWatcher(cfgPath, fileLog)
+
 	tunnelStarted := false
 	startTunnel := func(current config.Config) {
 		if tunnelStarted {

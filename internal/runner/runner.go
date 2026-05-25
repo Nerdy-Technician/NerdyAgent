@@ -477,6 +477,33 @@ func buildFallbackBinaryURL(binaryURL, serverURL string) string {
 	return serverURL + "/downloads/" + fileName
 }
 
+// CompareVersions is the exported form of compareVersions for use by the version watcher.
+func CompareVersions(current, target string) int {
+	return compareVersions(current, target)
+}
+
+// RunUpdateAgent runs an update_agent job payload directly (used by the version watcher goroutine).
+func RunUpdateAgent(payload map[string]interface{}, cfg Config) (string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec)*time.Second)
+	defer cancel()
+	return updateAgentBinary(ctx, payload, cfg)
+}
+
+// AgentBinaryFilename returns the expected agent binary filename for the current OS/arch.
+func AgentBinaryFilename() string {
+	if runtime.GOOS == "windows" {
+		return "nerdyrmm-agent-windows-amd64.exe"
+	}
+	switch runtime.GOARCH {
+	case "arm64":
+		return "nerdyrmm-agent-linux-arm64"
+	case "arm":
+		return "nerdyrmm-agent-linux-armv7"
+	default:
+		return "nerdyrmm-agent-linux-amd64"
+	}
+}
+
 func compareVersions(current, target string) int {
 	a := parseVersionParts(current)
 	b := parseVersionParts(target)
