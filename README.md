@@ -59,7 +59,7 @@ The agent reads its configuration from `config.json`. All fields are optional ex
 | `deviceId` | int | `0` | Device ID assigned by the server after registration. Set automatically. |
 | `token` | string | — | Per-device auth token assigned by the server after registration. Set automatically. |
 | `checkinEvery` | duration | `30s` | How often the agent checks in with the server (e.g. `"60s"`, `"5m"`). |
-| `agentVersion` | string | `0.3.5` | Reported agent version. Updated automatically on agent self-update. |
+| `agentVersion` | string | `0.3.9.2` | Reported agent version. Updated automatically on agent self-update. |
 | `jobTimeoutSec` | int | `120` | Maximum seconds a single job (command/script) may run before being killed. |
 | `outputMaxBytes` | int | `131072` | Maximum bytes of output captured per job (128 KB). Excess is truncated. |
 
