@@ -88,46 +88,81 @@ func defaultConfigPath() string {
 	return cfgPath
 }
 
+const (
+	githubReleasesAPI  = "https://api.github.com/repos/Nerdy-Technician/NerdyAgent/releases/latest"
+	githubDownloadBase = "https://github.com/Nerdy-Technician/NerdyAgent/releases/download"
+	forceUpdateEvery   = 12 * time.Hour
+)
+
+func fetchGitHubLatestVersion() (version string, err error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", githubReleasesAPI, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "NerdyAgent-updater")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", err
+	}
+	v := strings.TrimPrefix(strings.TrimSpace(release.TagName), "v")
+	if v == "" {
+		return "", fmt.Errorf("empty tag_name")
+	}
+	return v, nil
+}
+
+func githubBinaryURL(version string) string {
+	tag := "v" + version
+	return githubDownloadBase + "/" + tag + "/" + runner.AgentBinaryFilename()
+}
+
 func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
+	lastForced := time.Now()
 	for range ticker.C {
 		cfg, err := config.Load(cfgPath)
-		if err != nil || strings.TrimSpace(cfg.ServerURL) == "" {
-			continue
-		}
-		versionURL := strings.TrimRight(cfg.ServerURL, "/") + "/downloads/agent-version.txt"
-		resp, err := http.Get(versionURL) //nolint:gosec
 		if err != nil {
 			continue
 		}
-		body, err := func() (string, error) {
-			defer resp.Body.Close()
-			b := make([]byte, 64)
-			n, _ := resp.Body.Read(b)
-			return strings.TrimSpace(string(b[:n])), nil
-		}()
-		if err != nil || body == "" || resp.StatusCode != 200 {
+		latestVersion, err := fetchGitHubLatestVersion()
+		if err != nil {
+			fileLog.writef("version watcher: github check failed: %v", err)
 			continue
 		}
-		latestVersion := body
-		if runner.CompareVersions(cfg.AgentVersion, latestVersion) >= 0 {
+		isNewer := runner.CompareVersions(cfg.AgentVersion, latestVersion) < 0
+		forceInstall := time.Since(lastForced) >= forceUpdateEvery
+		if !isNewer && !forceInstall {
 			continue
 		}
-		fileLog.writef("version watcher: current=%s latest=%s — queuing self-update", cfg.AgentVersion, latestVersion)
+		reason := "newer version available"
+		if forceInstall && !isNewer {
+			reason = "forced 12h reinstall"
+		}
+		fileLog.writef("version watcher: current=%s latest=%s reason=%s — installing", cfg.AgentVersion, latestVersion, reason)
 		payload := map[string]interface{}{
 			"version":     latestVersion,
-			"binaryUrl":   strings.TrimRight(cfg.ServerURL, "/") + "/downloads/" + runner.AgentBinaryFilename(),
+			"binaryUrl":   githubBinaryURL(latestVersion),
 			"serviceName": "nerdyrmm-agent",
 		}
-		status, output := runner.RunUpdateAgent(payload, runner.Config{
+		st, output := runner.RunUpdateAgent(payload, runner.Config{
 			TimeoutSec:     300,
 			OutputMaxBytes: 65536,
 			CurrentVersion: cfg.AgentVersion,
 			ConfigPath:     cfgPath,
 			ServerURL:      cfg.ServerURL,
 		})
-		fileLog.writef("version watcher self-update result: status=%s output=%s", status, output)
+		fileLog.writef("version watcher update result: status=%s output=%s", st, output)
+		lastForced = time.Now()
 	}
 }
 
