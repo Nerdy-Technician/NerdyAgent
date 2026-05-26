@@ -310,11 +310,7 @@ func updateAgentBinary(ctx context.Context, payload map[string]interface{}, cfg 
 	serviceName, _ := payload["serviceName"].(string)
 	serviceName = strings.TrimSpace(serviceName)
 	if serviceName == "" {
-		if runtime.GOOS == "windows" {
-			serviceName = "NerdyRMMAgent"
-		} else {
-			serviceName = "nerdyrmm-agent"
-		}
+		serviceName = AgentServiceName()
 	}
 
 	if runtime.GOOS == "windows" {
@@ -508,6 +504,14 @@ func AgentBinaryFilename() string {
 	default:
 		return "nerdyrmm-agent-linux-amd64"
 	}
+}
+
+// AgentServiceName returns the service name used by the install scripts.
+func AgentServiceName() string {
+	if runtime.GOOS == "windows" {
+		return "NerdyAgent"
+	}
+	return "nerdyagent"
 }
 
 func compareVersions(current, target string) int {

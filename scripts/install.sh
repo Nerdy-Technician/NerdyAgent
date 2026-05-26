@@ -36,7 +36,7 @@ log "Installing NerdyAgent (${AGENT_VERSION}) for linux/${ARCH}"
 log "Server: $SERVER_URL"
 
 # Download binary
-BINARY_URL="${SERVER_URL}/downloads/nerdyagent-linux-${ARCH}"
+BINARY_URL="${SERVER_URL}/downloads/nerdyrmm-agent-linux-${ARCH}"
 log "Downloading agent from $BINARY_URL"
 curl -fsSL -o /tmp/nerdyagent "$BINARY_URL" || err "Failed to download agent binary from $BINARY_URL"
 chmod +x /tmp/nerdyagent
@@ -47,7 +47,7 @@ log "Agent binary installed to $INSTALL_DIR/nerdyagent"
 mkdir -p "$CONFIG_DIR"
 cat > "$CONFIG_FILE" <<EOF
 {
-  "serverURL": "$SERVER_URL",
+  "serverUrl": "$SERVER_URL",
   "enrollmentToken": "$ENROLLMENT_TOKEN",
   "checkinEvery": "60s",
   "jobTimeoutSec": 120,

@@ -152,7 +152,7 @@ func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
 		payload := map[string]interface{}{
 			"version":     latestVersion,
 			"binaryUrl":   githubBinaryURL(latestVersion),
-			"serviceName": "nerdyrmm-agent",
+			"serviceName": runner.AgentServiceName(),
 		}
 		st, output := runner.RunUpdateAgent(payload, runner.Config{
 			TimeoutSec:     300,

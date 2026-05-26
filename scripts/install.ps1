@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $InstallDir = "$env:ProgramFiles\NerdyAgent"
 $ConfigDir  = "$env:ProgramData\NerdyAgent"
 $ConfigFile = "$ConfigDir\config.json"
-$BinaryURL  = "$ServerURL/downloads/nerdyagent-windows-amd64.exe"
+$BinaryURL  = "$ServerURL/downloads/nerdyrmm-agent-windows-amd64.exe"
 $BinaryPath = "$InstallDir\nerdyagent.exe"
 $ServiceName = "NerdyAgent"
 
@@ -23,7 +23,7 @@ Write-Host "[+] Downloading agent from $BinaryURL"
 Invoke-WebRequest -Uri $BinaryURL -OutFile $BinaryPath -UseBasicParsing
 
 $config = @{
-    serverURL       = $ServerURL
+    serverUrl       = $ServerURL
     enrollmentToken = $Token
     checkinEvery    = "60s"
     jobTimeoutSec   = 120
