@@ -33,10 +33,12 @@ type shellMessage struct {
 }
 
 type shellProcess struct {
-	id    string
-	cmd   *exec.Cmd
-	ptmx  *os.File
-	write sync.Mutex
+	id     string
+	cmd    *exec.Cmd
+	ptmx   *os.File      // Linux PTY
+	stdin  io.WriteCloser // Windows pipe stdin
+	stdout io.ReadCloser  // Windows pipe stdout
+	write  sync.Mutex
 }
 
 type manager struct {
@@ -145,15 +147,38 @@ func (m *manager) write(msg shellMessage) error {
 }
 
 func (m *manager) openShell(msg shellMessage) {
-	if runtime.GOOS == "windows" {
-		_ = m.write(shellMessage{Type: "shell_error", SessionID: strings.TrimSpace(msg.SessionID), Message: "shell tunnel is unsupported on Windows agent"})
-		return
-	}
 	sessionID := strings.TrimSpace(msg.SessionID)
 	if sessionID == "" {
 		return
 	}
 	m.closeShell(sessionID, "reopen")
+
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass")
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			_ = m.write(shellMessage{Type: "shell_error", SessionID: sessionID, Message: fmt.Sprintf("open shell failed: %v", err)})
+			return
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			_ = m.write(shellMessage{Type: "shell_error", SessionID: sessionID, Message: fmt.Sprintf("open shell failed: %v", err)})
+			return
+		}
+		cmd.Stderr = cmd.Stdout
+		if err := cmd.Start(); err != nil {
+			_ = m.write(shellMessage{Type: "shell_error", SessionID: sessionID, Message: fmt.Sprintf("open shell failed: %v", err)})
+			return
+		}
+		proc := &shellProcess{id: sessionID, cmd: cmd, stdin: stdin, stdout: stdout}
+		m.sessMu.Lock()
+		m.sessions[sessionID] = proc
+		m.sessMu.Unlock()
+		go m.readPipe(proc)
+		go m.waitExit(proc)
+		return
+	}
+
 	cols := uint16(msg.Cols)
 	rows := uint16(msg.Rows)
 	if cols == 0 {
@@ -205,6 +230,19 @@ func (m *manager) waitExit(proc *shellProcess) {
 	m.closeShell(proc.id, msg)
 }
 
+func (m *manager) readPipe(proc *shellProcess) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := proc.stdout.Read(buf)
+		if n > 0 {
+			_ = m.write(shellMessage{Type: "shell_output", SessionID: proc.id, Data: string(buf[:n])})
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func (m *manager) inputShell(msg shellMessage) {
 	proc := m.getSession(msg.SessionID)
 	if proc == nil {
@@ -214,7 +252,11 @@ func (m *manager) inputShell(msg shellMessage) {
 		return
 	}
 	proc.write.Lock()
-	_, _ = proc.ptmx.Write([]byte(msg.Data))
+	if proc.stdin != nil {
+		_, _ = proc.stdin.Write([]byte(msg.Data))
+	} else {
+		_, _ = proc.ptmx.Write([]byte(msg.Data))
+	}
 	proc.write.Unlock()
 }
 
@@ -255,7 +297,15 @@ func (m *manager) closeShell(sessionID, _ string) {
 	if !ok || proc == nil {
 		return
 	}
-	_ = proc.ptmx.Close()
+	if proc.stdin != nil {
+		_ = proc.stdin.Close()
+	}
+	if proc.stdout != nil {
+		_ = proc.stdout.Close()
+	}
+	if proc.ptmx != nil {
+		_ = proc.ptmx.Close()
+	}
 	if proc.cmd.Process != nil {
 		_ = proc.cmd.Process.Kill()
 	}
