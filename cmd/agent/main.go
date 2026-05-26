@@ -79,11 +79,11 @@ func main() {
 func defaultConfigPath() string {
 	cfgPath := "/etc/nerdyrmm-agent/config.json"
 	if runtime.GOOS == "windows" {
-		programFilesDir := os.Getenv("ProgramFiles")
-		if strings.TrimSpace(programFilesDir) == "" {
-			programFilesDir = `C:\Program Files`
+		programData := os.Getenv("ProgramData")
+		if strings.TrimSpace(programData) == "" {
+			programData = `C:\ProgramData`
 		}
-		cfgPath = filepath.Join(programFilesDir, "Nerdy RMM", "config.json")
+		cfgPath = filepath.Join(programData, "NerdyRMM", "config.json")
 	}
 	return cfgPath
 }

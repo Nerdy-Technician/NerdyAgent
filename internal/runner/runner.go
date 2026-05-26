@@ -868,7 +868,7 @@ func RestartService(ctx context.Context, payload map[string]interface{}, maxByte
 		return "success", strings.TrimSpace(string(out))
 	}
 	// Try systemctl first, fall back to service
-	out, err := exec.CommandContext(ctx, "systemctl", "restart", name).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "systemctl", "restart", normalizeSystemdUnit(name)).CombinedOutput()
 	if err != nil {
 		// fallback
 		out2, err2 := exec.CommandContext(ctx, "service", name, "restart").CombinedOutput()
@@ -880,8 +880,16 @@ func RestartService(ctx context.Context, payload map[string]interface{}, maxByte
 	return "success", strings.TrimSpace(string(out))
 }
 
+func normalizeSystemdUnit(unit string) string {
+	// If no extension given, assume .service so users don't need to type "wazuh.service"
+	if unit != "" && !strings.Contains(unit, ".") {
+		return unit + ".service"
+	}
+	return unit
+}
+
 func SystemdRestartUnit(ctx context.Context, payload map[string]interface{}, maxBytes int) (string, string) {
-	unit := strings.TrimSpace(fmt.Sprintf("%v", payload["unit"]))
+	unit := normalizeSystemdUnit(strings.TrimSpace(fmt.Sprintf("%v", payload["unit"])))
 	if unit == "" || unit == "<nil>" {
 		return "failed", "unit is required"
 	}
@@ -896,7 +904,7 @@ func SystemdRestartUnit(ctx context.Context, payload map[string]interface{}, max
 }
 
 func SystemdEnableUnit(ctx context.Context, payload map[string]interface{}, maxBytes int) (string, string) {
-	unit := strings.TrimSpace(fmt.Sprintf("%v", payload["unit"]))
+	unit := normalizeSystemdUnit(strings.TrimSpace(fmt.Sprintf("%v", payload["unit"])))
 	if unit == "" || unit == "<nil>" {
 		return "failed", "unit is required"
 	}
