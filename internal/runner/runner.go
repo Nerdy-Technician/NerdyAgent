@@ -55,6 +55,12 @@ func Run(job protocol.Job, cfg Config) (status, output string) {
 		return managedDeploy(ctx, payload, cfg)
 	case "software_remove":
 		return removeSoftware(ctx, payload)
+	case "restart_service":
+		return RestartService(ctx, payload, cfg.OutputMaxBytes)
+	case "systemd_restart":
+		return SystemdRestartUnit(ctx, payload, cfg.OutputMaxBytes)
+	case "systemd_enable":
+		return SystemdEnableUnit(ctx, payload, cfg.OutputMaxBytes)
 	default:
 		return "failed", "unsupported job type"
 	}
@@ -843,4 +849,124 @@ func randomHexToken(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// ─── Monitoring policy job handlers ──────────────────────────────────────────
+
+func RestartService(ctx context.Context, payload map[string]interface{}, maxBytes int) (string, string) {
+	name := strings.TrimSpace(fmt.Sprintf("%v", payload["serviceName"]))
+	if name == "" || name == "<nil>" {
+		return "failed", "serviceName is required"
+	}
+	if runtime.GOOS == "windows" {
+		script := fmt.Sprintf("Restart-Service -Name '%s' -Force", strings.ReplaceAll(name, "'", "''"))
+		c := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+		out, err := c.CombinedOutput()
+		if err != nil {
+			return "failed", strings.TrimSpace(string(out))
+		}
+		return "success", strings.TrimSpace(string(out))
+	}
+	// Try systemctl first, fall back to service
+	out, err := exec.CommandContext(ctx, "systemctl", "restart", name).CombinedOutput()
+	if err != nil {
+		// fallback
+		out2, err2 := exec.CommandContext(ctx, "service", name, "restart").CombinedOutput()
+		if err2 != nil {
+			return "failed", strings.TrimSpace(string(out)) + "\n" + strings.TrimSpace(string(out2))
+		}
+		return "success", strings.TrimSpace(string(out2))
+	}
+	return "success", strings.TrimSpace(string(out))
+}
+
+func SystemdRestartUnit(ctx context.Context, payload map[string]interface{}, maxBytes int) (string, string) {
+	unit := strings.TrimSpace(fmt.Sprintf("%v", payload["unit"]))
+	if unit == "" || unit == "<nil>" {
+		return "failed", "unit is required"
+	}
+	if runtime.GOOS == "windows" {
+		return "failed", "systemd not available on Windows"
+	}
+	out, err := exec.CommandContext(ctx, "systemctl", "restart", unit).CombinedOutput()
+	if err != nil {
+		return "failed", strings.TrimSpace(string(out))
+	}
+	return "success", strings.TrimSpace(string(out))
+}
+
+func SystemdEnableUnit(ctx context.Context, payload map[string]interface{}, maxBytes int) (string, string) {
+	unit := strings.TrimSpace(fmt.Sprintf("%v", payload["unit"]))
+	if unit == "" || unit == "<nil>" {
+		return "failed", "unit is required"
+	}
+	if runtime.GOOS == "windows" {
+		return "failed", "systemd not available on Windows"
+	}
+	out, err := exec.CommandContext(ctx, "systemctl", "enable", "--now", unit).CombinedOutput()
+	if err != nil {
+		return "failed", strings.TrimSpace(string(out))
+	}
+	return "success", strings.TrimSpace(string(out))
+}
+
+// CollectServiceStatus returns comma-separated lists of running and failed systemd services.
+func CollectServiceStatus() (running []string, failed []string) {
+	if runtime.GOOS == "windows" {
+		return collectWindowsServices()
+	}
+	return collectSystemdServices()
+}
+
+func collectSystemdServices() (running []string, failed []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// running
+	rOut, _ := exec.CommandContext(ctx, "systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain").Output()
+	for _, line := range strings.Split(string(rOut), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			name := strings.TrimSuffix(fields[0], ".service")
+			if name != "" {
+				running = append(running, name)
+			}
+		}
+	}
+	// failed
+	fOut, _ := exec.CommandContext(ctx, "systemctl", "list-units", "--type=service", "--state=failed", "--no-legend", "--plain").Output()
+	for _, line := range strings.Split(string(fOut), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			name := strings.TrimSuffix(fields[0], ".service")
+			if name != "" {
+				failed = append(failed, name)
+			}
+		}
+	}
+	return
+}
+
+func collectWindowsServices() (running []string, failed []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		`Get-Service | Select-Object -Property Name,Status | ConvertTo-Json -Compress`).Output()
+	if err != nil {
+		return
+	}
+	var services []struct {
+		Name   string `json:"Name"`
+		Status int    `json:"Status"` // 4 = Running, 1 = Stopped
+	}
+	if err := json.Unmarshal(out, &services); err != nil {
+		return
+	}
+	for _, svc := range services {
+		if svc.Status == 4 {
+			running = append(running, svc.Name)
+		} else if svc.Status == 1 {
+			failed = append(failed, svc.Name)
+		}
+	}
+	return
 }

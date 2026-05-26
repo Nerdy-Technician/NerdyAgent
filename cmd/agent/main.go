@@ -189,6 +189,14 @@ func cycle(cfg config.Config, cfgPath string) (config.Config, error, string) {
 			return cfg, err, ""
 		}
 	}
+	inventory := sysinfo.Inventory()
+	running, failed := runner.CollectServiceStatus()
+	if len(running) > 0 {
+		inventory["services_running"] = strings.Join(running, ",")
+	}
+	if len(failed) > 0 {
+		inventory["services_failed"] = strings.Join(failed, ",")
+	}
 	payload := protocol.CheckinRequest{
 		DeviceID:     cfg.DeviceID,
 		Token:        cfg.Token,
@@ -198,7 +206,7 @@ func cycle(cfg config.Config, cfgPath string) (config.Config, error, string) {
 		AgentVersion: cfg.AgentVersion,
 		IPs:          sysinfo.IPs(),
 		Metrics:      sysinfo.Metrics(),
-		Inventory:    sysinfo.Inventory(),
+		Inventory:    inventory,
 	}
 	b, _ := json.Marshal(payload)
 	resp, err := http.Post(cfg.ServerURL+"/api/agent/checkin", "application/json", bytes.NewReader(b))
