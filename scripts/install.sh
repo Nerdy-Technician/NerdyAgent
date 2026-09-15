@@ -126,6 +126,7 @@ if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
 fi
 install -m 0755 "$TMP_BIN" "$BIN_PATH"
 ln -sfn "$BIN_PATH" "$INSTALL_DIR/nerdyrmm-agent-tray" 2>/dev/null || true
+"$BIN_PATH" --install-icons >/dev/null 2>&1 || true
 log "Agent binary installed to $BIN_PATH"
 
 install -d -m 0755 "$CONFIG_DIR"
@@ -196,7 +197,6 @@ Type=Application
 Name=NerdyRMM Agent
 Comment=NerdyRMM / NerdyAgent status (user session tray)
 Exec=$exec_line
-Icon=network-idle
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false

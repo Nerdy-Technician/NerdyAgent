@@ -36,29 +36,33 @@ type toolTip struct {
 }
 
 type sniItem struct {
-	conn   *dbus.Conn
-	props  *prop.Properties
-	menu   *dbusMenu
-	mu     sync.Mutex
-	online bool
+	conn          *dbus.Conn
+	props         *prop.Properties
+	menu          *dbusMenu
+	mu            sync.Mutex
+	online        bool
+	fingerprint   string
+	offlineStreak int
+	registered    bool
+	watcherOwner  string
 }
 
 func (it *sniItem) ContextMenu(x, y int32) *dbus.Error {
 	_ = x
 	_ = y
-	notify(loadView())
 	return nil
 }
 
 func (it *sniItem) Activate(x, y int32) *dbus.Error {
 	_ = x
 	_ = y
-	notify(loadView())
 	return nil
 }
 
 func (it *sniItem) SecondaryActivate(x, y int32) *dbus.Error {
-	return it.Activate(x, y)
+	_ = x
+	_ = y
+	return nil
 }
 
 func (it *sniItem) Scroll(delta int32, orientation string) *dbus.Error {
@@ -88,11 +92,8 @@ func newMenu() *dbusMenu {
 	return m
 }
 
-func (m *dbusMenu) rebuild(v view) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.rev++
-	m.items = []menuItem{
+func (m *dbusMenu) rebuild(v view) bool {
+	items := []menuItem{
 		{id: 1, label: v.Title, enabled: false, visible: true},
 		{id: 2, label: v.Status, enabled: false, visible: true},
 		{id: 3, typ: "separator", visible: true},
@@ -109,6 +110,15 @@ func (m *dbusMenu) rebuild(v view) {
 			os.Exit(0)
 		}},
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if menuLabelsEqual(m.items, items) {
+		m.items = items
+		return false
+	}
+	m.rev++
+	m.items = items
+	return true
 }
 
 func (m *dbusMenu) GetLayout(parentID int32, recursionDepth int32, propertyNames []string) (uint32, menuLayout, *dbus.Error) {
@@ -232,6 +242,18 @@ func itemProps(it menuItem) map[string]dbus.Variant {
 	return p
 }
 
+func menuLabelsEqual(a, b []menuItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].id != b[i].id || a[i].label != b[i].label || a[i].typ != b[i].typ {
+			return false
+		}
+	}
+	return true
+}
+
 // Run shows a Cinnamon/AppIndicator-friendly StatusNotifier tray icon.
 // It reads status.json written by the agent service and never opens config.json
 // secrets. Requires a user graphical session (DISPLAY + session D-Bus), not root systemd.
@@ -258,26 +280,31 @@ func Run() error {
 	item := &sniItem{conn: conn, menu: newMenu()}
 	v := loadView()
 	item.online = v.Online
-	w, h, pix := iconPixmap(v.Online)
-	pm := []pixmap{{Width: w, Height: h, Data: pix}}
+	item.fingerprint = v.fingerprint()
+	absPNG, themePath, err := InstallThemeIcons()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NerdyRMM tray: icon install: %v\n", err)
+	}
+	name := sniIconName(v.Online, absPNG)
+	pm := sniPixmaps(v.Online)
 	itemSpec := map[string]map[string]*prop.Prop{
 		itemIface: {
 			"Category":            {Value: "SystemServices", Writable: false, Emit: prop.EmitTrue},
-			"Id":                  {Value: "nerdyrmm-agent", Writable: false, Emit: prop.EmitTrue},
+			"Id":                  {Value: iconName, Writable: false, Emit: prop.EmitTrue},
 			"Title":               {Value: v.Title, Writable: false, Emit: prop.EmitTrue},
 			"Status":              {Value: "Active", Writable: false, Emit: prop.EmitTrue},
 			"WindowId":            {Value: int32(0), Writable: false, Emit: prop.EmitTrue},
-			"IconName":            {Value: iconThemeName(v.Online), Writable: false, Emit: prop.EmitTrue},
+			"IconName":            {Value: name, Writable: false, Emit: prop.EmitTrue},
 			"IconPixmap":          {Value: pm, Writable: false, Emit: prop.EmitTrue},
 			"OverlayIconName":     {Value: "", Writable: false, Emit: prop.EmitTrue},
 			"OverlayIconPixmap":   {Value: []pixmap{}, Writable: false, Emit: prop.EmitTrue},
 			"AttentionIconName":   {Value: "", Writable: false, Emit: prop.EmitTrue},
 			"AttentionIconPixmap": {Value: []pixmap{}, Writable: false, Emit: prop.EmitTrue},
 			"AttentionMovieName":  {Value: "", Writable: false, Emit: prop.EmitTrue},
-			"ToolTip":             {Value: toolTip{Title: v.Title, Description: v.Status + "\n" + v.Detail, IconPixmap: pm}, Writable: false, Emit: prop.EmitTrue},
+			"ToolTip":             {Value: toolTip{Title: v.Title, Description: v.tooltipText(), IconPixmap: pm}, Writable: false, Emit: prop.EmitTrue},
 			"ItemIsMenu":          {Value: true, Writable: false, Emit: prop.EmitTrue},
 			"Menu":                {Value: dbus.ObjectPath(menuPath), Writable: false, Emit: prop.EmitTrue},
-			"IconThemePath":       {Value: "", Writable: false, Emit: prop.EmitTrue},
+			"IconThemePath":       {Value: themePath, Writable: false, Emit: prop.EmitTrue},
 		},
 	}
 	menuSpec := map[string]map[string]*prop.Prop{
@@ -305,10 +332,23 @@ func Run() error {
 	}
 
 	register := func() error {
+		owner := nameOwner(conn, watcherName)
+		if owner != "" && owner == item.watcherOwner && item.registered {
+			return nil
+		}
 		obj := conn.Object(watcherName, watcherPath)
 		call := obj.Call(watcherName+".RegisterStatusNotifierItem", 0, busName)
 		if call.Err != nil {
 			call = obj.Call(watcherName+".RegisterStatusNotifierItem", 0, busName+itemPath)
+		}
+		if call.Err == nil {
+			item.registered = true
+			item.watcherOwner = owner
+			if item.watcherOwner == "" {
+				item.watcherOwner = nameOwner(conn, watcherName)
+			}
+		} else {
+			item.registered = false
 		}
 		return call.Err
 	}
@@ -335,37 +375,79 @@ func Run() error {
 func (it *sniItem) refresh() {
 	v := loadView()
 	it.mu.Lock()
-	changed := v.Online != it.online
+	// Require two consecutive offline samples before flipping online→offline so a
+	// transient status.json rewrite cannot flicker the icon/badge.
+	if v.Online {
+		it.offlineStreak = 0
+	} else if it.online {
+		it.offlineStreak++
+		if it.offlineStreak < 2 {
+			it.mu.Unlock()
+			return
+		}
+	}
+	fp := v.fingerprint()
+	iconChanged := v.Online != it.online
+	same := fp == it.fingerprint
 	it.online = v.Online
+	it.fingerprint = fp
 	it.mu.Unlock()
-	it.menu.rebuild(v)
-	w, h, pix := iconPixmap(v.Online)
-	pm := []pixmap{{Width: w, Height: h, Data: pix}}
+	if same {
+		return
+	}
+
+	menuChanged := it.menu.rebuild(v)
+	pm := sniPixmaps(v.Online)
+	name := sniIconName(v.Online, "")
 	if it.props != nil {
 		_ = it.props.Set(itemIface, "Title", dbus.MakeVariant(v.Title))
-		_ = it.props.Set(itemIface, "IconName", dbus.MakeVariant(iconThemeName(v.Online)))
-		_ = it.props.Set(itemIface, "IconPixmap", dbus.MakeVariant(pm))
+		if iconChanged {
+			_ = it.props.Set(itemIface, "IconName", dbus.MakeVariant(name))
+			_ = it.props.Set(itemIface, "IconPixmap", dbus.MakeVariant(pm))
+		}
 		_ = it.props.Set(itemIface, "ToolTip", dbus.MakeVariant(toolTip{
 			Title:       v.Title,
-			Description: v.Status + "\n" + v.Detail,
+			Description: v.tooltipText(),
 			IconPixmap:  pm,
 		}))
 	}
-	if changed {
+	if iconChanged {
 		_ = it.conn.Emit(itemPath, itemIface+".NewIcon")
-		_ = it.conn.Emit(itemPath, itemIface+".NewStatus", "Active")
 	}
 	_ = it.conn.Emit(itemPath, itemIface+".NewToolTip")
-	_ = it.conn.Emit(menuPath, menuIface+".LayoutUpdated", it.menu.rev, int32(0))
-}
-
-func iconThemeName(online bool) string {
-	if online {
-		return "network-idle"
+	if menuChanged {
+		it.menu.mu.Lock()
+		rev := it.menu.rev
+		it.menu.mu.Unlock()
+		_ = it.conn.Emit(menuPath, menuIface+".LayoutUpdated", rev, int32(0))
 	}
-	return "network-offline"
 }
 
-func notify(v view) {
-	_ = exec.Command("notify-send", "-a", "NerdyRMM Agent", "-i", iconThemeName(v.Online), v.Title, v.Status+"\n"+v.Detail).Start()
+func nameOwner(conn *dbus.Conn, name string) string {
+	var owner string
+	if err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, name).Store(&owner); err != nil {
+		return ""
+	}
+	return owner
+}
+
+// sniIconName prefers an absolute PNG path (Cinnamon loads files when the
+// name contains "/"). An empty name lets xapp-sn-watcher fall back to IconPixmap.
+func sniIconName(online bool, absPNG string) string {
+	if p := iconFile(online); p != "" {
+		return p
+	}
+	if absPNG != "" {
+		return absPNG
+	}
+	return ""
+}
+
+func sniPixmaps(online bool) []pixmap {
+	descs := iconPixmaps(online)
+	out := make([]pixmap, 0, len(descs))
+	for _, d := range descs {
+		out = append(out, pixmap{Width: d.Width, Height: d.Height, Data: d.ARGB})
+	}
+	return out
 }

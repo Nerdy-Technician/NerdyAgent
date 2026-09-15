@@ -61,7 +61,7 @@ The agent reads its configuration from `config.json`. All fields are optional ex
 | `deviceId` | int | `0` | Device ID assigned by the server after registration. Set automatically. |
 | `token` | string | — | Per-device auth token assigned by the server after registration. Set automatically. |
 | `checkinEvery` | duration | `30s` | How often the agent checks in with the server (e.g. `"60s"`, `"5m"`). |
-| `agentVersion` | string | `0.3.10` | Reported agent version. Bumped automatically on a successful self-update. |
+| `agentVersion` | string | `0.3.10.3` | Reported agent version. Bumped automatically on a successful self-update. |
 | `jobTimeoutSec` | int | `120` | Maximum seconds a single job (command/script) may run before being killed. |
 | `outputMaxBytes` | int | `131072` | Maximum bytes of output captured per job (128 KB). Excess is truncated. |
 
@@ -144,7 +144,7 @@ A successful update:
 5. Writes **only** `agentVersion` in `config.json` — `deviceId`, `token`, and `serverUrl` stay put
 6. Restarts the detected systemd unit (`nerdyrmm-agent` or `nerdyagent`)
 
-One-shot (after 0.3.10 is already installed):
+One-shot (after 0.3.10.3 is already installed):
 
 ```bash
 sudo /opt/nerdyrmm/nerdyrmm-agent --self-update
@@ -156,8 +156,9 @@ sudo /usr/local/bin/nerdyagent --self-update
 
 `nerdyrmm-agent --tray` (or the `nerdyrmm-agent-tray-*` release asset, same binary) shows a StatusNotifier / AppIndicator icon in the **user** graphical session.
 
+- Icon is the NerdyRMM favicon (`internal/tray/favicon.png`): tight square crop of the 366×317 RGBA mark (transparency preserved; black outlines kept), bilinear-scaled to **22 and 32px**. The tray installs those PNGs under hicolor (`22x22`/`32x32`) and pixmaps, writes `index.theme` when missing, and sets `IconName` to the absolute 32px PNG path (Cinnamon/xapp-sn-watcher load file paths). `IconPixmap` is also sent as `a(iiay)` **network-endian ARGB32** (`A,R,G,B` — what xapp rotates into GdkPixbuf RGBA). Tiny green/red badge only; generated blue square only if PNG decode fails.
 - Reads `/etc/nerdyrmm-agent/status.json` or `/etc/nerdyagent/status.json` (no token)
-- Tooltip / click: running + last check-in + server URL
+- Tooltip and menu show running + last check-in + server URL. Clicks do **not** call `notify-send`; D-Bus `NewToolTip` / `LayoutUpdated` only fire when the view actually changes.
 - Menu: open docs, open status file, quit tray (does **not** stop the agent service)
 - Autostart: `/etc/xdg/autostart/nerdyrmm-agent-tray.desktop` (installed by `scripts/install.sh` and `install.sh`)
 
@@ -169,11 +170,11 @@ sudo -u roffo env DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/$(id -u roffo) \
   /opt/nerdyrmm/nerdyrmm-agent --tray &
 ```
 
-**Deps:** session D-Bus and a StatusNotifier host (Cinnamon, GNOME AppIndicator extension, KDE). No extra GTK packages to *build* the agent. `notify-send` and `xdg-open` are optional for click actions.
+**Deps:** session D-Bus and a StatusNotifier host (Cinnamon, GNOME AppIndicator extension, KDE). No extra GTK packages to *build* the agent. `xdg-open` is optional for menu actions. The tray does not send desktop notifications.
 
 Windows tray is not required.
 
-## Asgard: replace 0.3.9.5 without re-enrollment
+## Asgard: in-place replace without re-enrollment
 
 Live layout on Asgard:
 
@@ -184,20 +185,26 @@ Live layout on Asgard:
 | Unit | `nerdyrmm-agent.service` |
 | Server | `https://rmm-api.nerdytech.dev` |
 
-After this version is published as GitHub release `v0.3.10`:
+Hosts already on 0.3.10–0.3.10.2 from this PR should move to **0.3.10.3** (tight favicon crop + Cinnamon IconName/ARGB32). After `v0.3.10.3` is on GitHub (merge this branch, then the main/tag release workflow):
 
 ```bash
-sudo AGENT_VERSION=0.3.10 bash -c '
+sudo AGENT_VERSION=0.3.10.3 bash -c '
   curl -fsSL -o /tmp/upgrade-inplace.sh \
     https://raw.githubusercontent.com/Nerdy-Technician/NerdyAgent/main/scripts/upgrade-inplace.sh
   bash /tmp/upgrade-inplace.sh
 '
 ```
 
-Manual equivalent (do **not** rewrite config.json except `agentVersion`):
+Until the release exists, copy `nerdyrmm-agent-linux-amd64` from this PR’s CI artifacts (or `make build-linux`) and run:
 
 ```bash
-TAG=v0.3.10
+sudo ./scripts/upgrade-inplace.sh ./nerdyrmm-agent-linux-amd64
+```
+
+Manual equivalent (do **not** rewrite config.json except `agentVersion`). Restart the user-session tray after replacing the binary — the old `--tray` process keeps the mapped image until killed:
+
+```bash
+TAG=v0.3.10.3
 curl -fsSL -o /tmp/nerdyrmm-agent-linux-amd64 \
   https://github.com/Nerdy-Technician/NerdyAgent/releases/download/${TAG}/nerdyrmm-agent-linux-amd64
 curl -fsSL -o /tmp/SHA256SUMS \
@@ -205,7 +212,9 @@ curl -fsSL -o /tmp/SHA256SUMS \
 (cd /tmp && sha256sum -c --ignore-missing SHA256SUMS)
 
 sudo systemctl stop nerdyrmm-agent
+sudo pkill -u roffo -f "nerdyrmm-agent --tray" 2>/dev/null || true
 sudo install -m 0755 /tmp/nerdyrmm-agent-linux-amd64 /opt/nerdyrmm/nerdyrmm-agent
+sudo /opt/nerdyrmm/nerdyrmm-agent --install-icons || true
 
 sudo python3 - <<'PY'
 import json
@@ -214,7 +223,7 @@ with open(path) as f:
     cfg = json.load(f)
 assert cfg.get("deviceId"), "deviceId missing — abort"
 assert cfg.get("token"), "token missing — abort"
-cfg["agentVersion"] = "0.3.10"
+cfg["agentVersion"] = "0.3.10.3"
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
@@ -226,7 +235,6 @@ sudo tee /etc/xdg/autostart/nerdyrmm-agent-tray.desktop >/dev/null <<'EOF'
 Type=Application
 Name=NerdyRMM Agent
 Exec=/opt/nerdyrmm/nerdyrmm-agent --tray
-Icon=network-idle
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
@@ -238,12 +246,6 @@ sudo systemctl status nerdyrmm-agent --no-pager
 sudo -u roffo env DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/$(id -u roffo) \
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u roffo)/bus \
   /opt/nerdyrmm/nerdyrmm-agent --tray >/tmp/nerdyrmm-agent-tray.log 2>&1 &
-```
-
-Until `v0.3.10` exists on GitHub, build from this branch (`make build-linux`) and pass the local file:
-
-```bash
-sudo ./scripts/upgrade-inplace.sh dist/nerdyrmm-agent-linux-amd64
 ```
 
 **Agent fails to start — config not found**

@@ -13,7 +13,7 @@ DEVICE_ID="${2:-}"
 TOKEN="${3:-}"
 ENROLLMENT_TOKEN="${4:-${NRMM_TOKEN:-}}"
 GITHUB_REPO="${NRMM_AGENT_GITHUB_REPO:-Nerdy-Technician/NerdyAgent}"
-AGENT_VERSION="${AGENT_VERSION:-0.3.10}"
+AGENT_VERSION="${AGENT_VERSION:-0.3.10.3}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "This installer must be run as root (sudo)." >&2
@@ -102,6 +102,7 @@ else
 fi
 install -m 0755 "$SRC" "$BIN_PATH"
 ln -sfn "$BIN_PATH" "$INSTALL_DIR/nerdyrmm-agent-tray" 2>/dev/null || true
+"$BIN_PATH" --install-icons >/dev/null 2>&1 || true
 
 cat >/etc/systemd/system/nerdyrmm-agent.service <<SERVICE
 [Unit]
@@ -147,7 +148,6 @@ Type=Application
 Name=NerdyRMM Agent
 Comment=NerdyRMM / NerdyAgent status (user session tray)
 Exec=$BIN_PATH --tray
-Icon=network-idle
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false
