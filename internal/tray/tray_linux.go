@@ -48,18 +48,23 @@ type sniItem struct {
 func (it *sniItem) ContextMenu(x, y int32) *dbus.Error {
 	_ = x
 	_ = y
+	// Right-click is handled by the dbusmenu. Do not open connection
+	// properties or the status panel here.
 	return nil
 }
 
 func (it *sniItem) Activate(x, y int32) *dbus.Error {
 	_ = x
 	_ = y
-	openPopup(popupURL("/"))
+	// Cinnamon StatusNotifier: left-click / double-click. 0.3.10.3 left this
+	// empty (notification-spam fix) so clicks did nothing on Asgard.
+	openStatusPanel()
 	return nil
 }
 
 func (it *sniItem) SecondaryActivate(x, y int32) *dbus.Error {
-	return it.Activate(x, y)
+	openStatusPanel()
+	return nil
 }
 
 func (it *sniItem) Scroll(delta int32, orientation string) *dbus.Error {
@@ -100,21 +105,16 @@ func (m *dbusMenu) rebuild(v view) {
 		notifyState = 1
 	}
 	m.items = []menuItem{
-		{id: 1, label: "NerdyRMM Agent", enabled: false, visible: true},
-		{id: 2, label: v.Status, enabled: false, visible: true},
-		{id: 3, typ: "separator", visible: true},
-		{id: 4, label: "View connection properties…", enabled: true, visible: true, onClick: func() {
-			openPopup(popupURL("/connection"))
-		}},
-		{id: 5, label: "View About", enabled: true, visible: true, onClick: func() {
-			openPopup(popupURL("/#about"))
-		}},
-		{id: 6, label: "Notify when a technician connects", enabled: true, visible: true, toggle: notifyState, toggleTyp: "checkmark", onClick: func() {
+		{id: 1, label: "Open status panel", enabled: true, visible: true, onClick: openStatusPanel},
+		{id: 2, typ: "separator", visible: true},
+		{id: 3, label: "Connection properties…", enabled: true, visible: true, onClick: openConnectionProperties},
+		{id: 4, label: "About", enabled: true, visible: true, onClick: openAboutPanel},
+		{id: 5, label: "Notify when a technician connects", enabled: true, visible: true, toggle: notifyState, toggleTyp: "checkmark", onClick: func() {
 			p := loadPrefs()
 			p.NotifyTechnicianConnect = !p.NotifyTechnicianConnect
 			_ = savePrefs(p)
 		}},
-		{id: 7, label: "Restart agent", enabled: true, visible: true, onClick: func() {
+		{id: 6, label: "Restart agent", enabled: true, visible: true, onClick: func() {
 			if err := restartAgent(v.Service); err != nil {
 				_ = exec.Command("notify-send", "-a", "NerdyRMM Agent", "-i", "nerdyrmm-agent",
 					"Could not restart agent", err.Error()).Start()
@@ -123,11 +123,11 @@ func (m *dbusMenu) rebuild(v view) {
 			_ = exec.Command("notify-send", "-a", "NerdyRMM Agent", "-i", "nerdyrmm-agent",
 				"NerdyRMM Agent", "Agent service restart requested. The tray stays running.").Start()
 		}},
-		{id: 8, label: "Open web UI", enabled: v.WebURL != "", visible: true, onClick: func() {
+		{id: 7, label: "Open web UI", enabled: v.WebURL != "", visible: true, onClick: func() {
 			openURL(v.WebURL)
 		}},
-		{id: 9, typ: "separator", visible: true},
-		{id: 10, label: "Quit tray", enabled: true, visible: true, onClick: func() {
+		{id: 8, typ: "separator", visible: true},
+		{id: 9, label: "Quit tray", enabled: true, visible: true, onClick: func() {
 			os.Exit(0)
 		}},
 	}

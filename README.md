@@ -156,9 +156,13 @@ sudo /usr/local/bin/nerdyagent --self-update
 
 `nerdyrmm-agent --tray` (or the `nerdyrmm-agent-tray-*` release asset, same binary) runs in the **user** graphical session — never as the root systemd MainPID.
 
-**Hover tooltip:** high-level status only — `NerdyRMM Agent — Online` / `Offline` / `Update available`. It never includes `serverUrl`, `deviceId`, token, enrollment, or config path.
+**Hover tooltip:** high-level status only — `Online` / `Offline` / `Update available` (SNI title is still `NerdyRMM Agent`). It never includes `serverUrl`, `deviceId`, token, enrollment, or config path.
 
-**Left-click:** opens a feature-rich **localhost popup** (`http://127.0.0.1:<ephemeral>/`, bound to loopback only). Chromium/Chrome `--app=` is preferred when present; otherwise Firefox or `xdg-open`. Tabs:
+**Left-click / double-click / middle-click:** **must** open the status panel. Cinnamon StatusNotifier calls `Activate` / `SecondaryActivate` (`ItemIsMenu=false`). On 0.3.10.3 those methods were empty, so clicks did nothing on Asgard.
+
+The panel is the Datto-style localhost UI when Chrome/Chromium/Firefox can be launched as an app window. If no known browser is on `PATH`, it falls back to **zenity** (same UX as the 0.3.10.4 hotfix) with version, hostname, OS, last check-in, and tunnel — still no connection secrets. `xdg-open` is not used for this path (it can succeed without showing a window). `nerdyrmm-agent --tray-status` opens the same panel once.
+
+Tabs in the rich popup:
 
 - **Status** — online/offline, last check-in (relative), version, hostname, OS, tunnel online. No secrets.
 - **Tickets** — recent tickets if the agent could fetch `/api/agent/tickets` (secret-free summaries in `status.json`). If that API is missing, empty state plus an “open in web UI” link.
@@ -167,8 +171,9 @@ sudo /usr/local/bin/nerdyagent --self-update
 
 **Right-click context menu:**
 
-- **View connection properties…** — separate dialog (`/connection`) with server URL, device id, config path, service name, and a **masked** token (`••••` + last 4). Never the full device token.
-- **View About**
+- **Open status panel** — same as left-click
+- **Connection properties…** — **only** this explicit action (or its dialog). Server URL, device id, config path, service name, and a **masked** token (`••••` + last 4). Never the full device token. Not in the tooltip and not in the status panel.
+- **About**
 - **Notify when a technician connects** — optional; default **off**. Persisted in `~/.config/nerdyrmm-agent/prefs.json`. When a remote SSH/desktop/chat session opens, one `notify-send` (and tray attention). Ordinary check-ins do not notify.
 - **Restart agent** — `pkexec /usr/libexec/nerdyrmm/nerdyrmm-agent-restart` (polkit), which restarts `nerdyrmm-agent.service` or `nerdyagent.service`. Does **not** quit the tray. On Asgard this is the `/opt/nerdyrmm` + `nerdyrmm-agent` unit.
 - **Open web UI** — `xdg-open` the known `serverUrl`

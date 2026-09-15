@@ -45,7 +45,7 @@ func TestServeStatusOmitsClearToken(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["tooltip"] != "NerdyRMM Agent — Online" {
+	if payload["tooltip"] != "Online" {
 		t.Fatalf("tooltip %v", payload["tooltip"])
 	}
 	if payload["tunnelOnline"] != true {

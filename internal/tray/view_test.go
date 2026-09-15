@@ -34,7 +34,7 @@ func TestLoadViewTooltipHasNoConnectionDetails(t *testing.T) {
 	if !v.Online {
 		t.Fatalf("view = %+v", v)
 	}
-	if v.Tooltip != "NerdyRMM Agent — Online" {
+	if v.Tooltip != "Online" {
 		t.Fatalf("tooltip = %q", v.Tooltip)
 	}
 	if tooltipContainsSecrets(v.Tooltip) {
@@ -50,7 +50,7 @@ func TestLoadViewTooltipHasNoConnectionDetails(t *testing.T) {
 
 func TestTooltipUpdateAvailable(t *testing.T) {
 	statusLine, tip := highLevelStatus(true, true)
-	if statusLine != "Update available" || tip != "NerdyRMM Agent — Update available" {
+	if statusLine != "Update available" || tip != "Update available" {
 		t.Fatalf("%s / %s", statusLine, tip)
 	}
 	if tooltipContainsSecrets(tip) {

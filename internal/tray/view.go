@@ -45,7 +45,7 @@ func loadView() view {
 	cfg := paths.ConfigFile()
 	v := view{
 		Title:      "NerdyRMM Agent",
-		Tooltip:    "NerdyRMM Agent — Offline",
+		Tooltip:    "Offline",
 		Status:     "Offline",
 		Detail:     "Waiting for agent status.json",
 		DocsURL:    "https://github.com/Nerdy-Technician/NerdyAgent",
@@ -57,12 +57,12 @@ func loadView() view {
 	if err != nil {
 		if os.IsNotExist(err) {
 			v.Status = "Offline"
-			v.Tooltip = "NerdyRMM Agent — Offline"
+			v.Tooltip = "Offline"
 			v.Detail = "status.json not found — is the agent service running?"
 			return v
 		}
 		v.Status = "Offline"
-		v.Tooltip = "NerdyRMM Agent — Offline"
+		v.Tooltip = "Offline"
 		v.Detail = "status.json unreadable"
 		return v
 	}
@@ -96,11 +96,11 @@ func loadView() view {
 func highLevelStatus(online, updateAvail bool) (statusLine, tooltip string) {
 	switch {
 	case updateAvail:
-		return "Update available", "NerdyRMM Agent — Update available"
+		return "Update available", "Update available"
 	case online:
-		return "Online", "NerdyRMM Agent — Online"
+		return "Online", "Online"
 	default:
-		return "Offline", "NerdyRMM Agent — Offline"
+		return "Offline", "Offline"
 	}
 }
 

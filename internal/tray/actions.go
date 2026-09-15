@@ -54,29 +54,6 @@ func openURL(raw string) {
 	_ = exec.Command("xdg-open", raw).Start()
 }
 
-func openPopup(url string) {
-	url = strings.TrimSpace(url)
-	if url == "" {
-		return
-	}
-	candidates := [][]string{
-		{"google-chrome", "--app=" + url, "--window-size=460,640", "--class=NerdyRMMAgent"},
-		{"chromium", "--app=" + url, "--window-size=460,640", "--class=NerdyRMMAgent"},
-		{"chromium-browser", "--app=" + url, "--window-size=460,640"},
-		{"microsoft-edge", "--app=" + url, "--window-size=460,640"},
-		{"firefox", "--new-window", url},
-		{"xdg-open", url},
-	}
-	for _, args := range candidates {
-		if _, err := exec.LookPath(args[0]); err != nil {
-			continue
-		}
-		if err := exec.Command(args[0], args[1:]...).Start(); err == nil {
-			return
-		}
-	}
-}
-
 func notifyTechnician(kind string) {
 	title := "NerdyRMM Agent"
 	body := "A technician connected to this device."

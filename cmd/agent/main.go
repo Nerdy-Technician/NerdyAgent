@@ -66,6 +66,10 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "--tray-status":
+			tray.OpenStatusPanel()
+			time.Sleep(750 * time.Millisecond)
+			return
 		case "--tray-ui":
 			if err := tray.RunUIOnly(); err != nil {
 				fmt.Fprintf(os.Stderr, "tray-ui: %v\n", err)
@@ -130,6 +134,7 @@ func printUsage() {
 Usage:
   nerdyrmm-agent                 Run the RMM agent (systemd / Windows service)
   nerdyrmm-agent --tray          Linux system tray (user graphical session)
+  nerdyrmm-agent --tray-status   Open the status panel once (same as left-click; for tests)
   nerdyrmm-agent --tray-ui       Localhost popup UI only (no StatusNotifier; for tests)
   nerdyrmm-agent --install-icons [dir]  Write hicolor NR icons (default /usr/share/icons/hicolor)
   nerdyrmm-agent --self-update   Poll server/GitHub and apply a newer build
