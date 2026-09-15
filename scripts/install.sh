@@ -126,7 +126,6 @@ if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
 fi
 install -m 0755 "$TMP_BIN" "$BIN_PATH"
 ln -sfn "$BIN_PATH" "$INSTALL_DIR/nerdyrmm-agent-tray" 2>/dev/null || true
-"$BIN_PATH" --install-icons >/dev/null 2>&1 || true
 log "Agent binary installed to $BIN_PATH"
 
 install -d -m 0755 "$CONFIG_DIR"
@@ -195,8 +194,9 @@ install_tray() {
 [Desktop Entry]
 Type=Application
 Name=NerdyRMM Agent
-Comment=NerdyRMM / NerdyAgent status (user session tray)
+Comment=NerdyRMM / NerdyAgent Datto-style tray (user session)
 Exec=$exec_line
+Icon=nerdyrmm-agent
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false
@@ -205,6 +205,67 @@ X-GNOME-Autostart-Delay=3
 Hidden=false
 EOF
   log "Tray autostart installed at $desktop_dst"
+
+  "$BIN_PATH" --install-icons /usr/share/icons/hicolor >/dev/null 2>&1 || true
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+  fi
+
+  install -d -m 0755 /usr/lib/systemd/user
+  cat >/usr/lib/systemd/user/nerdyrmm-agent-tray.service <<EOF
+[Unit]
+Description=NerdyRMM Agent tray (user session)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_PATH --tray
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+  log "User systemd unit template: nerdyrmm-agent-tray.service"
+
+  install -d -m 0755 /usr/libexec/nerdyrmm
+  cat >/usr/libexec/nerdyrmm/nerdyrmm-agent-restart <<'RESTART'
+#!/bin/sh
+set -eu
+for unit in nerdyrmm-agent.service nerdyagent.service; do
+  state="$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)"
+  if [ "$state" = "loaded" ]; then
+    systemctl restart "$unit"
+    echo "restarted $unit"
+    exit 0
+  fi
+done
+echo "No nerdyrmm-agent.service or nerdyagent.service is installed." >&2
+exit 1
+RESTART
+  chmod 0755 /usr/libexec/nerdyrmm/nerdyrmm-agent-restart
+  if [[ -d /usr/share/polkit-1/actions ]]; then
+    cat >/usr/share/polkit-1/actions/org.nerdyrmm.agent.policy <<'PK'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Nerdy Technician</vendor>
+  <action id="org.nerdyrmm.agent.restart">
+    <description>Restart the NerdyRMM agent service</description>
+    <message>Authentication is required to restart the NerdyRMM agent</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/nerdyrmm/nerdyrmm-agent-restart</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>
+PK
+  fi
 
   launch_for_user() {
     local user="$1"

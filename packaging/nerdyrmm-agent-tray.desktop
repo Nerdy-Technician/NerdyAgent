@@ -1,9 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=NerdyRMM Agent
-Comment=NerdyRMM / NerdyAgent status (user session tray)
+Comment=NerdyRMM / NerdyAgent Datto-style tray (user session)
 TryExec=nerdyrmm-agent
 Exec=nerdyrmm-agent --tray
+Icon=nerdyrmm-agent
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false

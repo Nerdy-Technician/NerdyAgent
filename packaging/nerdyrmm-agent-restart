@@ -1,0 +1,16 @@
+#!/bin/sh
+# Restart the NerdyRMM / NerdyAgent systemd unit. Invoked via pkexec from the
+# user-session tray. Does not stop the tray process.
+set -eu
+
+for unit in nerdyrmm-agent.service nerdyagent.service; do
+  state="$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)"
+  if [ "$state" = "loaded" ]; then
+    systemctl restart "$unit"
+    echo "restarted $unit"
+    exit 0
+  fi
+done
+
+echo "No nerdyrmm-agent.service or nerdyagent.service is installed." >&2
+exit 1

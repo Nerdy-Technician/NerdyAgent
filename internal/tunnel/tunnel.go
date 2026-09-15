@@ -19,6 +19,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/nerdyrmm/agent/internal/config"
+	"github.com/nerdyrmm/agent/internal/ipc"
+	"github.com/nerdyrmm/agent/internal/status"
 )
 
 type shellMessage struct {
@@ -30,12 +32,14 @@ type shellMessage struct {
 	Port      int    `json:"port,omitempty"`
 	Cols      int    `json:"cols,omitempty"`
 	Rows      int    `json:"rows,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	From      string `json:"from,omitempty"`
 }
 
 type shellProcess struct {
 	id     string
 	cmd    *exec.Cmd
-	ptmx   *os.File      // Linux PTY
+	ptmx   *os.File       // Linux PTY
 	stdin  io.WriteCloser // Windows pipe stdin
 	stdout io.ReadCloser  // Windows pipe stdout
 	write  sync.Mutex
@@ -48,35 +52,105 @@ type manager struct {
 	sessMu   sync.Mutex
 	tcpConns map[string]net.Conn
 	tcpMu    sync.Mutex
+	chats    map[string]struct{}
+	chatMu   sync.Mutex
+	rep      status.Reporter
 }
 
-func Run(cfg config.Config) {
-	for {
-		err := runOnce(cfg)
-		if err != nil {
-			fmt.Printf("agent tunnel disconnected: %v\n", err)
+type liveTunnel struct {
+	mu    sync.Mutex
+	m     *manager
+	rep   status.Reporter
+	token string
+}
+
+func (t *liveTunnel) setManager(m *manager) {
+	t.mu.Lock()
+	t.m = m
+	t.mu.Unlock()
+}
+
+func (t *liveTunnel) SendChat(sessionID, text string) error {
+	if t == nil {
+		return fmt.Errorf("tunnel offline")
+	}
+	t.mu.Lock()
+	m := t.m
+	t.mu.Unlock()
+	if m == nil {
+		return fmt.Errorf("tunnel offline")
+	}
+	return m.sendChatFromUser(sessionID, text)
+}
+
+func Run(cfg config.Config, rep status.Reporter) {
+	live := &liveTunnel{rep: rep, token: cfg.Token}
+	ipcToken := status.NewIPCToken()
+	if srv, err := ipc.Listen(ipcToken); err == nil {
+		srv.SetHandler(live)
+		if rep != nil {
+			rep.SetIPC(srv.Path(), srv.Token())
 		}
-		// Keep reconnect latency low so browser SSH recovers quickly after transient websocket closes.
-		time.Sleep(2 * time.Second)
+		defer srv.Close()
+	}
+
+	bo := newBackoff(time.Second, 30*time.Second)
+	for {
+		started := time.Now()
+		err := runOnce(cfg, live)
+		live.setManager(nil)
+		if rep != nil {
+			rep.SetTunnelOnline(false)
+			rep.ClearSessions()
+		}
+		if err != nil {
+			fmt.Printf("agent tunnel disconnected: %s\n", status.RedactSecret(err.Error(), cfg.Token))
+		}
+		if time.Since(started) > 20*time.Second {
+			bo.reset()
+		}
+		time.Sleep(bo.next())
 	}
 }
 
-func runOnce(cfg config.Config) error {
+func runOnce(cfg config.Config, live *liveTunnel) error {
 	wsURL, err := buildWSURL(cfg.ServerURL, cfg.DeviceID, cfg.Token)
 	if err != nil {
 		return err
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
-		return err
+		if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) {
+			time.Sleep(20 * time.Second)
+		}
+		return fmt.Errorf("dial failed: %s", status.RedactSecret(err.Error(), cfg.Token))
 	}
 	defer conn.Close()
+	conn.SetReadLimit(1 << 20)
+	_ = conn.SetReadDeadline(time.Now().Add(75 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(75 * time.Second))
+	})
 
 	m := &manager{
 		ws:       conn,
 		sessions: map[string]*shellProcess{},
 		tcpConns: map[string]net.Conn{},
+		chats:    map[string]struct{}{},
+		rep:      nil,
 	}
+	if live != nil {
+		m.rep = live.rep
+		live.setManager(m)
+	}
+	if m.rep != nil {
+		m.rep.SetTunnelOnline(true)
+	}
+
 	stopHeartbeat := make(chan struct{})
 	go m.heartbeat(stopHeartbeat, 20*time.Second)
 	defer close(stopHeartbeat)
@@ -84,8 +158,9 @@ func runOnce(cfg config.Config) error {
 		var msg shellMessage
 		if err := conn.ReadJSON(&msg); err != nil {
 			m.closeAllSessions("tunnel read closed")
-			return err
+			return fmt.Errorf("read closed: %s", status.RedactSecret(err.Error(), cfg.Token))
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(75 * time.Second))
 		switch strings.ToLower(strings.TrimSpace(msg.Type)) {
 		case "shell_open":
 			m.openShell(msg)
@@ -95,12 +170,23 @@ func runOnce(cfg config.Config) error {
 			m.resizeShell(msg)
 		case "shell_close":
 			m.closeShell(msg.SessionID, "shell closed")
-		case "tcp_open":
+		case "tcp_open", "desktop_open":
+			if strings.EqualFold(msg.Type, "desktop_open") && strings.TrimSpace(msg.Kind) == "" {
+				msg.Kind = "desktop"
+			}
 			m.openTCP(msg)
 		case "tcp_data":
 			m.inputTCP(msg)
-		case "tcp_close":
+		case "tcp_close", "desktop_close":
 			m.closeTCP(msg.SessionID, "tcp closed")
+		case "chat_open":
+			m.openChat(msg)
+		case "chat_message":
+			m.recvChat(msg)
+		case "chat_close":
+			m.closeChat(msg.SessionID)
+		case "ping":
+			_ = m.write(shellMessage{Type: "pong"})
 		}
 	}
 }
@@ -113,6 +199,9 @@ func (m *manager) heartbeat(stop <-chan struct{}, every time.Duration) {
 		case <-stop:
 			return
 		case <-ticker.C:
+			m.writeMu.Lock()
+			_ = m.ws.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
+			m.writeMu.Unlock()
 			_ = m.write(shellMessage{Type: "ping"})
 		}
 	}
@@ -143,6 +232,7 @@ func buildWSURL(serverURL string, deviceID int64, token string) (string, error) 
 func (m *manager) write(msg shellMessage) error {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
+	_ = m.ws.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	return m.ws.WriteJSON(msg)
 }
 
@@ -174,6 +264,7 @@ func (m *manager) openShell(msg shellMessage) {
 		m.sessMu.Lock()
 		m.sessions[sessionID] = proc
 		m.sessMu.Unlock()
+		reportOpen(m.rep, "ssh", sessionID)
 		go m.readPipe(proc)
 		go m.waitExit(proc)
 		return
@@ -198,6 +289,7 @@ func (m *manager) openShell(msg shellMessage) {
 	m.sessMu.Lock()
 	m.sessions[sessionID] = proc
 	m.sessMu.Unlock()
+	reportOpen(m.rep, "ssh", sessionID)
 
 	_ = m.write(shellMessage{Type: "shell_ready", SessionID: sessionID})
 	go m.streamOutput(proc)
@@ -297,6 +389,7 @@ func (m *manager) closeShell(sessionID, _ string) {
 	if !ok || proc == nil {
 		return
 	}
+	reportClose(m.rep, id)
 	if proc.stdin != nil {
 		_ = proc.stdin.Close()
 	}
@@ -330,6 +423,15 @@ func (m *manager) closeAllSessions(reason string) {
 	for _, id := range tcpIDs {
 		m.closeTCP(id, reason)
 	}
+	m.chatMu.Lock()
+	chatIDs := make([]string, 0, len(m.chats))
+	for id := range m.chats {
+		chatIDs = append(chatIDs, id)
+	}
+	m.chatMu.Unlock()
+	for _, id := range chatIDs {
+		m.closeChat(id)
+	}
 }
 
 func (m *manager) dumpState() string {
@@ -339,7 +441,10 @@ func (m *manager) dumpState() string {
 	m.tcpMu.Lock()
 	tcpCount := len(m.tcpConns)
 	m.tcpMu.Unlock()
-	b, _ := json.Marshal(map[string]interface{}{"sessions": shellCount, "tcpSessions": tcpCount})
+	m.chatMu.Lock()
+	chatCount := len(m.chats)
+	m.chatMu.Unlock()
+	b, _ := json.Marshal(map[string]interface{}{"sessions": shellCount, "tcpSessions": tcpCount, "chatSessions": chatCount})
 	return string(b)
 }
 
@@ -368,6 +473,8 @@ func (m *manager) openTCP(msg shellMessage) {
 	m.tcpMu.Lock()
 	m.tcpConns[sessionID] = conn
 	m.tcpMu.Unlock()
+	kind := classifyTCP(port, msg.Kind)
+	reportOpen(m.rep, kind, sessionID)
 	_ = m.write(shellMessage{Type: "tcp_ready", SessionID: sessionID})
 	go m.streamTCP(sessionID, conn)
 }
@@ -420,7 +527,88 @@ func (m *manager) closeTCP(sessionID, _ string) {
 		delete(m.tcpConns, id)
 	}
 	m.tcpMu.Unlock()
-	if ok && conn != nil {
+	if !ok {
+		return
+	}
+	reportClose(m.rep, id)
+	if conn != nil {
 		_ = conn.Close()
 	}
+}
+
+func (m *manager) openChat(msg shellMessage) {
+	sessionID := strings.TrimSpace(msg.SessionID)
+	if sessionID == "" {
+		return
+	}
+	m.chatMu.Lock()
+	m.chats[sessionID] = struct{}{}
+	m.chatMu.Unlock()
+	reportOpen(m.rep, "chat", sessionID)
+	_ = m.write(shellMessage{Type: "chat_ready", SessionID: sessionID})
+}
+
+func (m *manager) recvChat(msg shellMessage) {
+	sessionID := strings.TrimSpace(msg.SessionID)
+	text := strings.TrimSpace(msg.Data)
+	if text == "" {
+		text = strings.TrimSpace(msg.Message)
+	}
+	if sessionID == "" || text == "" {
+		return
+	}
+	m.chatMu.Lock()
+	_, ok := m.chats[sessionID]
+	m.chatMu.Unlock()
+	if !ok {
+		m.openChat(shellMessage{SessionID: sessionID})
+	}
+	from := strings.ToLower(strings.TrimSpace(msg.From))
+	if from == "" {
+		from = "technician"
+	}
+	if m.rep != nil {
+		m.rep.AppendChat(sessionID, from, text)
+	}
+}
+
+func (m *manager) sendChatFromUser(sessionID, text string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("empty message")
+	}
+	if sessionID == "" {
+		m.chatMu.Lock()
+		for id := range m.chats {
+			sessionID = id
+			break
+		}
+		m.chatMu.Unlock()
+	}
+	if sessionID == "" {
+		return fmt.Errorf("no active chat")
+	}
+	if m.rep != nil {
+		m.rep.AppendChat(sessionID, "user", text)
+	}
+	return m.write(shellMessage{Type: "chat_message", SessionID: sessionID, Data: text, From: "user"})
+}
+
+func (m *manager) closeChat(sessionID string) {
+	id := strings.TrimSpace(sessionID)
+	if id == "" {
+		return
+	}
+	m.chatMu.Lock()
+	_, ok := m.chats[id]
+	if ok {
+		delete(m.chats, id)
+	}
+	m.chatMu.Unlock()
+	if !ok {
+		return
+	}
+	reportClose(m.rep, id)
+	_ = m.write(shellMessage{Type: "chat_close", SessionID: id})
 }

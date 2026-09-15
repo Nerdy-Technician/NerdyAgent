@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NerdyRMM Agent</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <style>
+    :root {
+      --blue: #1e88e5;
+      --navy: #0d47a1;
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --ink: #1a2332;
+      --muted: #5c6b7a;
+      --line: #e3e8ee;
+      --ok: #2ecc71;
+      --bad: #e74c3c;
+      --warn: #f1c40f;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+      font: 13px/1.45 "Segoe UI", Ubuntu, Cantarell, sans-serif; }
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 14px; background: linear-gradient(180deg, #1e88e5, #1565c0);
+      color: #fff;
+    }
+    header img { width: 32px; height: 32px; border-radius: 6px; background: #fff; }
+    header h1 { font-size: 14px; margin: 0; font-weight: 650; }
+    header .sub { opacity: .9; font-size: 11px; }
+    .pill { margin-left: auto; background: rgba(255,255,255,.18); border-radius: 999px;
+      padding: 3px 10px; font-size: 11px; font-weight: 650; letter-spacing: .02em; }
+    nav { display: flex; background: var(--card); border-bottom: 1px solid var(--line); }
+    nav button {
+      flex: 1; border: 0; background: transparent; padding: 10px 6px; cursor: pointer;
+      color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent;
+    }
+    nav button.active { color: var(--navy); border-bottom-color: var(--blue); }
+    main { padding: 12px; min-height: 420px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+    .row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; }
+    .k { color: var(--muted); }
+    .v { font-weight: 600; text-align: right; }
+    .empty { color: var(--muted); text-align: center; padding: 28px 10px; }
+    .empty a { color: var(--blue); }
+    .sess { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .sess:last-child { border-bottom: 0; }
+    .badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+      background: #e3f2fd; color: var(--navy); border-radius: 4px; padding: 2px 6px; }
+    .chat { max-height: 180px; overflow: auto; background: #fafbfc; border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px; margin: 8px 0; }
+    .chat .line { margin: 0 0 6px; }
+    .chat .who { font-size: 10px; color: var(--muted); }
+    form.chat-send { display: flex; gap: 6px; }
+    form.chat-send input { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+    form.chat-send button, .btn {
+      background: var(--blue); color: #fff; border: 0; border-radius: 6px; padding: 8px 12px;
+      font-weight: 650; cursor: pointer;
+    }
+    .btn.secondary { background: #eceff1; color: var(--ink); }
+    label.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .about { text-align: center; padding: 16px 8px; }
+    .about img { width: 64px; height: 64px; border-radius: 12px; }
+    .err { color: var(--bad); font-size: 12px; }
+    footer { padding: 8px 14px 12px; color: var(--muted); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/favicon.png" alt="NR">
+    <div>
+      <h1>NerdyRMM Agent</h1>
+      <div class="sub" id="ver"> </div>
+    </div>
+    <div class="pill" id="pill">…</div>
+  </header>
+  <nav>
+    <button class="active" data-tab="status">Status</button>
+    <button data-tab="tickets">Tickets</button>
+    <button data-tab="sessions">Sessions</button>
+    <button data-tab="about">About</button>
+  </nav>
+  <main>
+    <section id="tab-status">
+      <div class="card" id="status-card"></div>
+      <div class="card">
+        <label class="toggle">
+          <input type="checkbox" id="notify">
+          Notify when a technician connects
+        </label>
+        <div class="k" style="margin-top:6px">Saved in your user prefs (~/.config/nerdyrmm-agent). Off by default. No notifications on ordinary check-ins.</div>
+      </div>
+    </section>
+    <section id="tab-tickets" hidden></section>
+    <section id="tab-sessions" hidden></section>
+    <section id="tab-about" hidden>
+      <div class="card about">
+        <img src="/favicon.png" alt="NerdyRMM">
+        <h2 style="margin:10px 0 4px;font-size:16px">NerdyAgent</h2>
+        <div id="about-ver"></div>
+        <p class="k">Standalone RMM agent for NerdyRMM.<br>© Nerdy Technician</p>
+        <p><a href="https://github.com/Nerdy-Technician/NerdyAgent" id="docs">Documentation</a></p>
+      </div>
+    </section>
+  </main>
+  <footer>Local popup on 127.0.0.1 — no device token is shown here.</footer>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = new URLSearchParams(location.search);
+    let tab = (location.hash || '').replace('#','') || params.get('tab') || 'status';
+    document.querySelectorAll('nav button').forEach(btn => {
+      btn.onclick = () => show(btn.dataset.tab);
+      if (btn.dataset.tab === tab) show(tab);
+    });
+    function show(name) {
+      tab = name;
+      document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+      ['status','tickets','sessions','about'].forEach(n => {
+        const el = $('tab-' + n);
+        if (el) el.hidden = n !== name;
+      });
+      history.replaceState(null, '', '#' + name);
+    }
+    function esc(s) {
+      return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    async function refresh() {
+      const r = await fetch('/api/status');
+      const d = await r.json();
+      $('pill').textContent = d.status;
+      $('ver').textContent = d.version ? ('v' + d.version) : '';
+      $('about-ver').textContent = d.version ? ('Version ' + d.version) : '';
+      $('notify').checked = !!d.notifyTechnicianConnect;
+      $('status-card').innerHTML = `
+        <div class="row"><span class="k">Agent</span><span class="v">${esc(d.status)}</span></div>
+        <div class="row"><span class="k">Last check-in</span><span class="v">${esc(d.lastCheckinRel || 'never')}</span></div>
+        <div class="row"><span class="k">Version</span><span class="v">${esc(d.version || '—')}</span></div>
+        <div class="row"><span class="k">Hostname</span><span class="v">${esc(d.hostname || '—')}</span></div>
+        <div class="row"><span class="k">OS</span><span class="v">${esc(d.os || '—')}</span></div>
+        <div class="row"><span class="k">Tunnel</span><span class="v">${d.tunnelOnline ? 'Online' : 'Offline'}</span></div>`;
+      const tickets = d.tickets || [];
+      const note = d.ticketsNote || 'No tickets for this device.';
+      const web = d.webURL || '#';
+      $('tab-tickets').innerHTML = tickets.length ? `<div class="card">${tickets.map(t =>
+        `<div class="sess"><span class="badge">${esc(t.status || 'ticket')}</span>
+         <div><b>#${esc(t.id)}</b> ${esc(t.title)}</div></div>`).join('')}</div>`
+        : `<div class="card empty">${esc(note)}<br><br><a href="${esc(web)}" target="_blank" rel="noopener">Open in web UI</a></div>`;
+      const sess = d.sessions || [];
+      let html = sess.length ? `<div class="card">${sess.map(s =>
+        `<div class="sess"><span class="badge">${esc(s.type)}</span>
+         <div>${esc(s.label || s.type)}<div class="k">${esc(s.startedAt || '')}</div></div></div>`).join('')}</div>`
+        : `<div class="card empty">No active remote sessions.</div>`;
+      const chatOn = sess.some(s => s.type === 'chat');
+      const chat = d.chat || [];
+      html += `<div class="card"><b>Chat</b>`;
+      if (!chatOn && !chat.length) {
+        html += `<div class="empty">No technician chat session.</div></div>`;
+      } else {
+        html += `<div class="chat" id="chatlog">${chat.map(c =>
+          `<div class="line"><div class="who">${esc(c.from)} · ${esc(c.at)}</div>${esc(c.text)}</div>`).join('') || '<div class="k">Connected. Waiting for messages.</div>'}</div>
+          <form class="chat-send" onsubmit="return sendChat(event)">
+            <input id="chattext" maxlength="2000" placeholder="Reply as the logged-in user">
+            <button type="submit">Send</button>
+          </form></div>`;
+      }
+      $('tab-sessions').innerHTML = html;
+      const log = $('chatlog');
+      if (log) log.scrollTop = log.scrollHeight;
+    }
+    $('notify').onchange = async () => {
+      await fetch('/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({notifyTechnicianConnect: $('notify').checked})});
+    };
+    async function sendChat(ev) {
+      ev.preventDefault();
+      const input = $('chattext');
+      const text = (input.value || '').trim();
+      if (!text) return false;
+      await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text})});
+      input.value = '';
+      refresh();
+      return false;
+    }
+    refresh();
+    setInterval(refresh, 2000);
+    if (tab && tab !== 'status') show(tab);
+  </script>
+</body>
+</html>
