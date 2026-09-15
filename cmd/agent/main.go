@@ -23,7 +23,7 @@ import (
 )
 
 // Version is overridden by -ldflags at build time.
-var Version = "0.3.10.1"
+var Version = "0.3.10.2"
 
 type agentFileLog struct {
 	path string
@@ -67,6 +67,14 @@ func main() {
 			return
 		case "--version", "version", "-v":
 			fmt.Println(Version)
+			return
+		case "--install-icons", "install-icons":
+			path, theme, err := tray.InstallThemeIcons()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "install-icons: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("installed theme icons: %s (theme %s)\n", path, theme)
 			return
 		case "--self-update", "self-update":
 			if err := runSelfUpdateOnce(); err != nil {
@@ -112,6 +120,7 @@ func printUsage() {
 Usage:
   nerdyrmm-agent                 Run the RMM agent (systemd / Windows service)
   nerdyrmm-agent --tray          Linux system tray (user graphical session)
+  nerdyrmm-agent --install-icons Install hicolor/pixmaps PNGs (root → /usr/share)
   nerdyrmm-agent --self-update   Poll server/GitHub and apply a newer build
   nerdyrmm-agent --version       Print version
 

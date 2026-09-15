@@ -4,10 +4,10 @@ set -euo pipefail
 # In-place upgrade for an already-enrolled host (Asgard /opt/nerdyrmm or
 # /usr/local/bin/nerdyagent). Never rewrites deviceId/token/serverUrl.
 #
-#   sudo AGENT_VERSION=0.3.10.1 ./scripts/upgrade-inplace.sh
+#   sudo AGENT_VERSION=0.3.10.2 ./scripts/upgrade-inplace.sh
 #   sudo ./scripts/upgrade-inplace.sh /path/to/nerdyrmm-agent-linux-amd64
 
-AGENT_VERSION="${AGENT_VERSION:-0.3.10.1}"
+AGENT_VERSION="${AGENT_VERSION:-0.3.10.2}"
 GITHUB_REPO="${NRMM_AGENT_GITHUB_REPO:-Nerdy-Technician/NerdyAgent}"
 LOCAL_BIN="${1:-}"
 
@@ -62,6 +62,7 @@ systemctl stop "$SERVICE_NAME" || true
 install -d -m 0755 "$INSTALL_DIR"
 install -m 0755 "$TMP" "$BIN_PATH"
 ln -sfn "$BIN_PATH" "$INSTALL_DIR/nerdyrmm-agent-tray" 2>/dev/null || true
+"$BIN_PATH" --install-icons >/dev/null 2>&1 || true
 
 python3 - "$CONFIG_FILE" "${AGENT_VERSION#v}" <<'PY'
 import json, sys

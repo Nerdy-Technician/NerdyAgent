@@ -23,6 +23,9 @@ func TestCompareVersionsFourPart(t *testing.T) {
 	if CompareVersions("0.3.10", "0.3.10.1") >= 0 {
 		t.Fatalf("0.3.10 should be older than 0.3.10.1")
 	}
+	if CompareVersions("0.3.10.1", "0.3.10.2") >= 0 {
+		t.Fatalf("0.3.10.1 should be older than 0.3.10.2")
+	}
 }
 
 func TestParseReleaseJSONFlexible(t *testing.T) {

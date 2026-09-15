@@ -281,16 +281,26 @@ func Run() error {
 	v := loadView()
 	item.online = v.Online
 	item.fingerprint = v.fingerprint()
-	w, h, pix := iconPixmap(v.Online)
-	pm := []pixmap{{Width: w, Height: h, Data: pix}}
+	absPNG, themePath, err := InstallThemeIcons()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NerdyRMM tray: icon install: %v\n", err)
+	}
+	name := iconFile(v.Online)
+	if name == "" {
+		name = absPNG
+	}
+	if name == "" {
+		name = iconName
+	}
+	pm := sniPixmaps(v.Online)
 	itemSpec := map[string]map[string]*prop.Prop{
 		itemIface: {
 			"Category":            {Value: "SystemServices", Writable: false, Emit: prop.EmitTrue},
-			"Id":                  {Value: "nerdyrmm-agent", Writable: false, Emit: prop.EmitTrue},
+			"Id":                  {Value: iconName, Writable: false, Emit: prop.EmitTrue},
 			"Title":               {Value: v.Title, Writable: false, Emit: prop.EmitTrue},
 			"Status":              {Value: "Active", Writable: false, Emit: prop.EmitTrue},
 			"WindowId":            {Value: int32(0), Writable: false, Emit: prop.EmitTrue},
-			"IconName":            {Value: "", Writable: false, Emit: prop.EmitTrue},
+			"IconName":            {Value: name, Writable: false, Emit: prop.EmitTrue},
 			"IconPixmap":          {Value: pm, Writable: false, Emit: prop.EmitTrue},
 			"OverlayIconName":     {Value: "", Writable: false, Emit: prop.EmitTrue},
 			"OverlayIconPixmap":   {Value: []pixmap{}, Writable: false, Emit: prop.EmitTrue},
@@ -300,7 +310,7 @@ func Run() error {
 			"ToolTip":             {Value: toolTip{Title: v.Title, Description: v.tooltipText(), IconPixmap: pm}, Writable: false, Emit: prop.EmitTrue},
 			"ItemIsMenu":          {Value: true, Writable: false, Emit: prop.EmitTrue},
 			"Menu":                {Value: dbus.ObjectPath(menuPath), Writable: false, Emit: prop.EmitTrue},
-			"IconThemePath":       {Value: "", Writable: false, Emit: prop.EmitTrue},
+			"IconThemePath":       {Value: themePath, Writable: false, Emit: prop.EmitTrue},
 		},
 	}
 	menuSpec := map[string]map[string]*prop.Prop{
@@ -393,11 +403,15 @@ func (it *sniItem) refresh() {
 	}
 
 	menuChanged := it.menu.rebuild(v)
-	w, h, pix := iconPixmap(v.Online)
-	pm := []pixmap{{Width: w, Height: h, Data: pix}}
+	pm := sniPixmaps(v.Online)
+	name := iconFile(v.Online)
+	if name == "" {
+		name = iconName
+	}
 	if it.props != nil {
 		_ = it.props.Set(itemIface, "Title", dbus.MakeVariant(v.Title))
 		if iconChanged {
+			_ = it.props.Set(itemIface, "IconName", dbus.MakeVariant(name))
 			_ = it.props.Set(itemIface, "IconPixmap", dbus.MakeVariant(pm))
 		}
 		_ = it.props.Set(itemIface, "ToolTip", dbus.MakeVariant(toolTip{
@@ -424,4 +438,13 @@ func nameOwner(conn *dbus.Conn, name string) string {
 		return ""
 	}
 	return owner
+}
+
+func sniPixmaps(online bool) []pixmap {
+	descs := iconPixmaps(online)
+	out := make([]pixmap, 0, len(descs))
+	for _, d := range descs {
+		out = append(out, pixmap{Width: d.Width, Height: d.Height, Data: d.ARGB})
+	}
+	return out
 }
