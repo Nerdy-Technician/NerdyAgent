@@ -36,24 +36,25 @@ type toolTip struct {
 }
 
 type sniItem struct {
-	conn   *dbus.Conn
-	props  *prop.Properties
-	menu   *dbusMenu
-	mu     sync.Mutex
-	online bool
+	conn          *dbus.Conn
+	props         *prop.Properties
+	menu          *dbusMenu
+	mu            sync.Mutex
+	online        bool
+	updateAvail   bool
+	lastSessionAt string
 }
 
 func (it *sniItem) ContextMenu(x, y int32) *dbus.Error {
 	_ = x
 	_ = y
-	notify(loadView())
 	return nil
 }
 
 func (it *sniItem) Activate(x, y int32) *dbus.Error {
 	_ = x
 	_ = y
-	notify(loadView())
+	openPopup(popupURL("/"))
 	return nil
 }
 
@@ -68,12 +69,14 @@ func (it *sniItem) Scroll(delta int32, orientation string) *dbus.Error {
 }
 
 type menuItem struct {
-	id      int32
-	label   string
-	typ     string
-	enabled bool
-	visible bool
-	onClick func()
+	id        int32
+	label     string
+	typ       string
+	enabled   bool
+	visible   bool
+	toggle    int32 // -1 none, 0 off, 1 on
+	toggleTyp string
+	onClick   func()
 }
 
 type dbusMenu struct {
@@ -92,20 +95,39 @@ func (m *dbusMenu) rebuild(v view) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rev++
+	notifyState := int32(0)
+	if v.NotifyPref {
+		notifyState = 1
+	}
 	m.items = []menuItem{
-		{id: 1, label: v.Title, enabled: false, visible: true},
+		{id: 1, label: "NerdyRMM Agent", enabled: false, visible: true},
 		{id: 2, label: v.Status, enabled: false, visible: true},
 		{id: 3, typ: "separator", visible: true},
-		{id: 4, label: "Open documentation", enabled: true, visible: true, onClick: func() {
-			_ = exec.Command("xdg-open", v.DocsURL).Start()
+		{id: 4, label: "View connection properties…", enabled: true, visible: true, onClick: func() {
+			openPopup(popupURL("/connection"))
 		}},
-		{id: 5, label: "Open status file", enabled: true, visible: true, onClick: func() {
-			if v.StatusFn != "" {
-				_ = exec.Command("xdg-open", v.StatusFn).Start()
+		{id: 5, label: "View About", enabled: true, visible: true, onClick: func() {
+			openPopup(popupURL("/#about"))
+		}},
+		{id: 6, label: "Notify when a technician connects", enabled: true, visible: true, toggle: notifyState, toggleTyp: "checkmark", onClick: func() {
+			p := loadPrefs()
+			p.NotifyTechnicianConnect = !p.NotifyTechnicianConnect
+			_ = savePrefs(p)
+		}},
+		{id: 7, label: "Restart agent", enabled: true, visible: true, onClick: func() {
+			if err := restartAgent(v.Service); err != nil {
+				_ = exec.Command("notify-send", "-a", "NerdyRMM Agent", "-i", "nerdyrmm-agent",
+					"Could not restart agent", err.Error()).Start()
+				return
 			}
+			_ = exec.Command("notify-send", "-a", "NerdyRMM Agent", "-i", "nerdyrmm-agent",
+				"NerdyRMM Agent", "Agent service restart requested. The tray stays running.").Start()
 		}},
-		{id: 6, typ: "separator", visible: true},
-		{id: 7, label: "Quit tray", enabled: true, visible: true, onClick: func() {
+		{id: 8, label: "Open web UI", enabled: v.WebURL != "", visible: true, onClick: func() {
+			openURL(v.WebURL)
+		}},
+		{id: 9, typ: "separator", visible: true},
+		{id: 10, label: "Quit tray", enabled: true, visible: true, onClick: func() {
 			os.Exit(0)
 		}},
 	}
@@ -229,15 +251,32 @@ func itemProps(it menuItem) map[string]dbus.Variant {
 		return p
 	}
 	p["label"] = dbus.MakeVariant(it.label)
+	if it.toggleTyp != "" {
+		p["toggle-type"] = dbus.MakeVariant(it.toggleTyp)
+		p["toggle-state"] = dbus.MakeVariant(it.toggle)
+	}
 	return p
 }
 
-// Run shows a Cinnamon/AppIndicator-friendly StatusNotifier tray icon.
-// It reads status.json written by the agent service and never opens config.json
-// secrets. Requires a user graphical session (DISPLAY + session D-Bus), not root systemd.
+// Run shows a Cinnamon/AppIndicator-friendly StatusNotifier tray icon plus a
+// localhost popup UI (opened on left-click). Requires a user graphical session.
 func Run() error {
 	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		return fmt.Errorf("no DISPLAY/WAYLAND_DISPLAY; tray must run in the user graphical session")
+	}
+	lock, err := acquireSingleton()
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
+	installUserIcons()
+
+	if _, err := startUI(); err != nil {
+		fmt.Fprintf(os.Stderr, "NerdyRMM tray: popup UI failed: %v\n", err)
+	} else {
+		printUIURL()
 	}
 
 	conn, err := dbus.ConnectSessionBus()
@@ -246,36 +285,40 @@ func Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("org.kde.StatusNotifierItem-%d-1", os.Getpid())
+	busName := "org.nerdyrmm.StatusNotifierItem"
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil {
 		return err
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		return fmt.Errorf("tray bus name already taken")
+		return fmt.Errorf("tray already running")
 	}
 
 	item := &sniItem{conn: conn, menu: newMenu()}
 	v := loadView()
 	item.online = v.Online
-	w, h, pix := iconPixmap(v.Online)
+	item.updateAvail = v.UpdateAvail
+	if snapLast := lastSessionStamp(v); snapLast != "" {
+		item.lastSessionAt = snapLast
+	}
+	w, h, pix := iconPixmap(v.Online, v.UpdateAvail)
 	pm := []pixmap{{Width: w, Height: h, Data: pix}}
 	itemSpec := map[string]map[string]*prop.Prop{
 		itemIface: {
 			"Category":            {Value: "SystemServices", Writable: false, Emit: prop.EmitTrue},
 			"Id":                  {Value: "nerdyrmm-agent", Writable: false, Emit: prop.EmitTrue},
-			"Title":               {Value: v.Title, Writable: false, Emit: prop.EmitTrue},
+			"Title":               {Value: "NerdyRMM Agent", Writable: false, Emit: prop.EmitTrue},
 			"Status":              {Value: "Active", Writable: false, Emit: prop.EmitTrue},
 			"WindowId":            {Value: int32(0), Writable: false, Emit: prop.EmitTrue},
-			"IconName":            {Value: iconThemeName(v.Online), Writable: false, Emit: prop.EmitTrue},
+			"IconName":            {Value: iconThemeName(), Writable: false, Emit: prop.EmitTrue},
 			"IconPixmap":          {Value: pm, Writable: false, Emit: prop.EmitTrue},
 			"OverlayIconName":     {Value: "", Writable: false, Emit: prop.EmitTrue},
 			"OverlayIconPixmap":   {Value: []pixmap{}, Writable: false, Emit: prop.EmitTrue},
 			"AttentionIconName":   {Value: "", Writable: false, Emit: prop.EmitTrue},
 			"AttentionIconPixmap": {Value: []pixmap{}, Writable: false, Emit: prop.EmitTrue},
 			"AttentionMovieName":  {Value: "", Writable: false, Emit: prop.EmitTrue},
-			"ToolTip":             {Value: toolTip{Title: v.Title, Description: v.Status + "\n" + v.Detail, IconPixmap: pm}, Writable: false, Emit: prop.EmitTrue},
-			"ItemIsMenu":          {Value: true, Writable: false, Emit: prop.EmitTrue},
+			"ToolTip":             {Value: toolTip{Title: "NerdyRMM Agent", Description: v.Tooltip, IconPixmap: pm}, Writable: false, Emit: prop.EmitTrue},
+			"ItemIsMenu":          {Value: false, Writable: false, Emit: prop.EmitTrue},
 			"Menu":                {Value: dbus.ObjectPath(menuPath), Writable: false, Emit: prop.EmitTrue},
 			"IconThemePath":       {Value: "", Writable: false, Emit: prop.EmitTrue},
 		},
@@ -316,8 +359,8 @@ func Run() error {
 		fmt.Fprintf(os.Stderr, "NerdyRMM tray: waiting for StatusNotifierWatcher: %v\n", err)
 	}
 
-	fmt.Println("NerdyRMM tray started (StatusNotifier / AppIndicator)")
-	ticker := time.NewTicker(5 * time.Second)
+	fmt.Println("NerdyRMM tray started (StatusNotifier + localhost popup)")
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	regTick := time.NewTicker(15 * time.Second)
 	defer regTick.Stop()
@@ -335,37 +378,62 @@ func Run() error {
 func (it *sniItem) refresh() {
 	v := loadView()
 	it.mu.Lock()
-	changed := v.Online != it.online
+	changed := v.Online != it.online || v.UpdateAvail != it.updateAvail
 	it.online = v.Online
+	it.updateAvail = v.UpdateAvail
+	it.maybeNotifyLocked(v)
 	it.mu.Unlock()
 	it.menu.rebuild(v)
-	w, h, pix := iconPixmap(v.Online)
+	w, h, pix := iconPixmap(v.Online, v.UpdateAvail)
 	pm := []pixmap{{Width: w, Height: h, Data: pix}}
 	if it.props != nil {
-		_ = it.props.Set(itemIface, "Title", dbus.MakeVariant(v.Title))
-		_ = it.props.Set(itemIface, "IconName", dbus.MakeVariant(iconThemeName(v.Online)))
+		_ = it.props.Set(itemIface, "Title", dbus.MakeVariant("NerdyRMM Agent"))
+		_ = it.props.Set(itemIface, "IconName", dbus.MakeVariant(iconThemeName()))
 		_ = it.props.Set(itemIface, "IconPixmap", dbus.MakeVariant(pm))
 		_ = it.props.Set(itemIface, "ToolTip", dbus.MakeVariant(toolTip{
-			Title:       v.Title,
-			Description: v.Status + "\n" + v.Detail,
+			Title:       "NerdyRMM Agent",
+			Description: v.Tooltip,
 			IconPixmap:  pm,
 		}))
+		if v.UpdateAvail {
+			_ = it.props.Set(itemIface, "Status", dbus.MakeVariant("NeedsAttention"))
+		} else {
+			_ = it.props.Set(itemIface, "Status", dbus.MakeVariant("Active"))
+		}
 	}
 	if changed {
 		_ = it.conn.Emit(itemPath, itemIface+".NewIcon")
-		_ = it.conn.Emit(itemPath, itemIface+".NewStatus", "Active")
+		st := "Active"
+		if v.UpdateAvail {
+			st = "NeedsAttention"
+		}
+		_ = it.conn.Emit(itemPath, itemIface+".NewStatus", st)
 	}
 	_ = it.conn.Emit(itemPath, itemIface+".NewToolTip")
 	_ = it.conn.Emit(menuPath, menuIface+".LayoutUpdated", it.menu.rev, int32(0))
 }
 
-func iconThemeName(online bool) string {
-	if online {
-		return "network-idle"
+func (it *sniItem) maybeNotifyLocked(v view) {
+	stamp := lastSessionStamp(v)
+	if stamp == "" || stamp == it.lastSessionAt {
+		return
 	}
-	return "network-offline"
+	it.lastSessionAt = stamp
+	if v.LastSession == nil || v.LastSession.Kind != "open" {
+		return
+	}
+	if !loadPrefs().NotifyTechnicianConnect {
+		return
+	}
+	notifyTechnician(v.LastSession.Type)
+	if it.conn != nil {
+		_ = it.conn.Emit(itemPath, itemIface+".NewStatus", "NeedsAttention")
+	}
 }
 
-func notify(v view) {
-	_ = exec.Command("notify-send", "-a", "NerdyRMM Agent", "-i", iconThemeName(v.Online), v.Title, v.Status+"\n"+v.Detail).Start()
+func lastSessionStamp(v view) string {
+	if v.LastSession == nil {
+		return ""
+	}
+	return v.LastSession.At + "|" + v.LastSession.Kind + "|" + v.LastSession.Type
 }

@@ -17,13 +17,14 @@ import (
 	"github.com/nerdyrmm/agent/internal/runner"
 	"github.com/nerdyrmm/agent/internal/status"
 	"github.com/nerdyrmm/agent/internal/sysinfo"
+	"github.com/nerdyrmm/agent/internal/tickets"
 	"github.com/nerdyrmm/agent/internal/tray"
 	"github.com/nerdyrmm/agent/internal/tunnel"
 	"github.com/nerdyrmm/agent/internal/updater"
 )
 
 // Version is overridden by -ldflags at build time.
-var Version = "0.3.10"
+var Version = "0.4.0"
 
 type agentFileLog struct {
 	path string
@@ -64,6 +65,23 @@ func main() {
 				fmt.Fprintf(os.Stderr, "tray: %v\n", err)
 				os.Exit(1)
 			}
+			return
+		case "--tray-ui":
+			if err := tray.RunUIOnly(); err != nil {
+				fmt.Fprintf(os.Stderr, "tray-ui: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "--install-icons":
+			dest := "/usr/share/icons/hicolor"
+			if len(args) > 1 && strings.TrimSpace(args[1]) != "" {
+				dest = args[1]
+			}
+			if err := tray.InstallHicolor(dest); err != nil {
+				fmt.Fprintf(os.Stderr, "install-icons: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("installed nerdyrmm-agent hicolor icons under", dest)
 			return
 		case "--version", "version", "-v":
 			fmt.Println(Version)
@@ -112,6 +130,8 @@ func printUsage() {
 Usage:
   nerdyrmm-agent                 Run the RMM agent (systemd / Windows service)
   nerdyrmm-agent --tray          Linux system tray (user graphical session)
+  nerdyrmm-agent --tray-ui       Localhost popup UI only (no StatusNotifier; for tests)
+  nerdyrmm-agent --install-icons [dir]  Write hicolor NR icons (default /usr/share/icons/hicolor)
   nerdyrmm-agent --self-update   Poll server/GitHub and apply a newer build
   nerdyrmm-agent --version       Print version
 
@@ -169,7 +189,7 @@ func runSelfUpdateOnce() error {
 	return nil
 }
 
-func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
+func runVersionWatcher(cfgPath string, fileLog *agentFileLog, hub *status.Hub) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -191,6 +211,7 @@ func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
 			fileLog.writef("version watcher: discover failed: %v", err)
 			continue
 		}
+		hub.SetLatestVersion(rel.Version)
 		if updater.CompareVersions(cfg.AgentVersion, rel.Version) >= 0 {
 			continue
 		}
@@ -215,17 +236,17 @@ func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
 	}
 }
 
-func publishStatus(cfgPath string, cfg config.Config, ok bool, errMsg string) {
-	_ = status.WriteSnapshot(cfgPath, status.Snapshot{
-		Version:       firstNonEmpty(cfg.AgentVersion, Version),
-		LastCheckin:   time.Now().UTC().Format(time.RFC3339),
-		LastCheckinOK: ok,
-		LastError:     errMsg,
-		ServerURL:     cfg.ServerURL,
-		DeviceID:      cfg.DeviceID,
-		Service:       runner.AgentServiceName(),
-		ConfigPath:    cfgPath,
-	})
+func publishIdentity(hub *status.Hub, cfgPath string, cfg config.Config) {
+	hub.SetIdentity(
+		firstNonEmpty(cfg.AgentVersion, Version),
+		cfg.ServerURL,
+		runner.AgentServiceName(),
+		cfgPath,
+		sysinfo.Hostname(),
+		sysinfo.OS(),
+		status.MaskToken(cfg.Token),
+		cfg.DeviceID,
+	)
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -247,9 +268,11 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 		cfg.AgentVersion = Version
 	}
 	fileLog.writef("config loaded; server=%s deviceId=%d version=%s", cfg.ServerURL, cfg.DeviceID, cfg.AgentVersion)
-	publishStatus(cfgPath, cfg, false, "")
+	hub := status.NewHub(cfgPath)
+	publishIdentity(hub, cfgPath, cfg)
+	hub.SetCheckin(false, "", firstNonEmpty(cfg.AgentVersion, Version))
 
-	go runVersionWatcher(cfgPath, fileLog)
+	go runVersionWatcher(cfgPath, fileLog, hub)
 
 	tunnelStarted := false
 	startTunnel := func(current config.Config) {
@@ -260,7 +283,7 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 			return
 		}
 		tunnelStarted = true
-		go tunnel.Run(current)
+		go tunnel.Run(current, hub)
 	}
 	startTunnel(cfg)
 
@@ -270,6 +293,7 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 	for {
 		nextCfg, err, statusMsg := cycle(cfg, cfgPath)
 		cfg = nextCfg
+		publishIdentity(hub, cfgPath, cfg)
 		startTunnel(cfg)
 		if statusMsg != "" {
 			statusLog.Write(statusMsg)
@@ -278,18 +302,24 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 			statusLog.Write(fmt.Sprintf("checkin failed: %v", err))
 			fileLog.writef("checkin failed: %v", err)
 			fmt.Printf("checkin failed: %v\n", err)
-			publishStatus(cfgPath, cfg, false, err.Error())
+			hub.SetCheckin(false, err.Error(), firstNonEmpty(cfg.AgentVersion, Version))
 			if backoff < 5*time.Minute {
 				backoff *= 2
 			}
 			time.Sleep(backoff)
 			continue
 		}
-		publishStatus(cfgPath, cfg, true, "")
+		hub.SetCheckin(true, "", firstNonEmpty(cfg.AgentVersion, Version))
+		go refreshTickets(hub, cfg)
 		backoff = cfg.CheckinEvery
 		fmt.Printf("checkin success (interval %s)\n", cfg.CheckinEvery)
 		time.Sleep(cfg.CheckinEvery)
 	}
+}
+
+func refreshTickets(hub *status.Hub, cfg config.Config) {
+	list, note := tickets.Fetch(cfg.ServerURL, cfg.Token, cfg.DeviceID)
+	hub.SetTickets(list, note)
 }
 
 func cycle(cfg config.Config, cfgPath string) (config.Config, error, string) {

@@ -11,67 +11,146 @@ import (
 )
 
 type view struct {
-	Title    string
-	Status   string
-	Detail   string
-	Online   bool
-	DocsURL  string
-	StatusFn string
-	LogFn    string
+	Title          string
+	Tooltip        string
+	Status         string
+	Detail         string
+	Online         bool
+	UpdateAvail    bool
+	TunnelOnline   bool
+	DocsURL        string
+	WebURL         string
+	StatusFn       string
+	Version        string
+	Hostname       string
+	OS             string
+	LastCheckin    string
+	LastCheckinRel string
+	ServerURL      string
+	DeviceID       int64
+	Service        string
+	ConfigPath     string
+	TokenMasked    string
+	Sessions       []status.Session
+	Tickets        []status.Ticket
+	TicketsNote    string
+	Chat           []status.ChatLine
+	IPCSocket      string
+	IPCToken       string
+	NotifyPref     bool
+	LastSession    *status.SessionEvt
 }
 
 func loadView() view {
 	cfg := paths.ConfigFile()
 	v := view{
-		Title:    "NerdyRMM Agent",
-		Status:   "Waiting for agent status",
-		Detail:   "The tray does not store device credentials. Status is read from status.json.",
-		DocsURL:  "https://github.com/Nerdy-Technician/NerdyAgent",
-		StatusFn: paths.StatusFile(cfg),
-		LogFn:    strings.TrimSuffix(cfg, "config.json") + "status.log",
+		Title:      "NerdyRMM Agent",
+		Tooltip:    "NerdyRMM Agent — Offline",
+		Status:     "Offline",
+		Detail:     "Waiting for agent status.json",
+		DocsURL:    "https://github.com/Nerdy-Technician/NerdyAgent",
+		StatusFn:   paths.StatusFile(cfg),
+		ConfigPath: cfg,
+		NotifyPref: loadPrefs().NotifyTechnicianConnect,
 	}
 	snap, err := status.ReadSnapshot(cfg)
 	if err != nil {
 		if os.IsNotExist(err) {
-			v.Status = "Agent status unavailable"
-			v.Detail = "status.json not found — is nerdyrmm-agent.service running?"
+			v.Status = "Offline"
+			v.Tooltip = "NerdyRMM Agent — Offline"
+			v.Detail = "status.json not found — is the agent service running?"
 			return v
 		}
-		v.Status = "Agent status unreadable"
-		v.Detail = err.Error()
+		v.Status = "Offline"
+		v.Tooltip = "NerdyRMM Agent — Offline"
+		v.Detail = "status.json unreadable"
 		return v
 	}
-	if strings.TrimSpace(snap.Version) != "" {
-		v.Title = "NerdyRMM Agent " + snap.Version
+	v.Version = snap.Version
+	v.Hostname = snap.Hostname
+	v.OS = snap.OS
+	v.LastCheckin = snap.LastCheckin
+	v.LastCheckinRel = relativeTime(snap.LastCheckin)
+	v.ServerURL = snap.ServerURL
+	v.DeviceID = snap.DeviceID
+	v.Service = snap.Service
+	if snap.ConfigPath != "" {
+		v.ConfigPath = snap.ConfigPath
 	}
+	v.TokenMasked = snap.TokenMasked
+	v.Sessions = snap.ActiveSessions
+	v.Tickets = snap.Tickets
+	v.TicketsNote = snap.TicketsNote
+	v.Chat = snap.Chat
+	v.IPCSocket = snap.IPCSocket
+	v.IPCToken = snap.IPCToken
+	v.TunnelOnline = snap.TunnelOnline
+	v.LastSession = snap.LastSession
+	v.WebURL = strings.TrimRight(snap.ServerURL, "/")
+	v.UpdateAvail = snap.UpdateAvailable
 	v.Online = snap.LastCheckinOK && snap.Running
-	if v.Online {
-		v.Status = "Online — last check-in ok"
-	} else if snap.LastError != "" {
-		v.Status = "Check-in failed"
-		v.Detail = snap.LastError
-	} else {
-		v.Status = "Agent running"
+	v.Status, v.Tooltip = highLevelStatus(v.Online, v.UpdateAvail)
+	return v
+}
+
+func highLevelStatus(online, updateAvail bool) (statusLine, tooltip string) {
+	switch {
+	case updateAvail:
+		return "Update available", "NerdyRMM Agent — Update available"
+	case online:
+		return "Online", "NerdyRMM Agent — Online"
+	default:
+		return "Offline", "NerdyRMM Agent — Offline"
 	}
-	parts := []string{}
-	if snap.ServerURL != "" {
-		parts = append(parts, "Server: "+snap.ServerURL)
+}
+
+func relativeTime(rfc3339 string) string {
+	s := strings.TrimSpace(rfc3339)
+	if s == "" {
+		return "never"
 	}
-	if snap.DeviceID > 0 {
-		parts = append(parts, fmt.Sprintf("Device %d", snap.DeviceID))
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
 	}
-	if snap.Service != "" {
-		parts = append(parts, "Service: "+snap.Service)
+	d := time.Since(ts)
+	if d < 0 {
+		d = 0
 	}
-	if snap.LastCheckin != "" {
-		if ts, err := time.Parse(time.RFC3339, snap.LastCheckin); err == nil {
-			parts = append(parts, "Check-in: "+ts.Local().Format(time.Kitchen))
-		} else {
-			parts = append(parts, "Check-in: "+snap.LastCheckin)
+	switch {
+	case d < 10*time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	}
+}
+
+func tooltipContainsSecrets(tooltip string) bool {
+	low := strings.ToLower(tooltip)
+	needles := []string{
+		"http://", "https://", "ws://", "wss://",
+		"serverurl", "server url", "deviceid", "device id", "device ",
+		"token", "enroll", "config.json", "config path", "/etc/",
+		"status.json",
+	}
+	for _, n := range needles {
+		if strings.Contains(low, n) {
+			return true
 		}
 	}
-	if len(parts) > 0 {
-		v.Detail = strings.Join(parts, "\n")
-	}
-	return v
+	return false
 }
