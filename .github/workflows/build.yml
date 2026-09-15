@@ -101,6 +101,10 @@ jobs:
         if: steps.release_state.outputs.SHOULD_RELEASE == 'true'
         run: echo -n "${{ steps.version.outputs.VERSION }}" > dist/agent-version.txt
 
+      - name: Write SHA256SUMS
+        if: steps.release_state.outputs.SHOULD_RELEASE == 'true'
+        run: make checksums
+
       - name: Create GitHub Release
         if: steps.release_state.outputs.SHOULD_RELEASE == 'true'
         uses: softprops/action-gh-release@v2
