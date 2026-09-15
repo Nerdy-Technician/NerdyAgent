@@ -285,13 +285,7 @@ func Run() error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NerdyRMM tray: icon install: %v\n", err)
 	}
-	name := iconFile(v.Online)
-	if name == "" {
-		name = absPNG
-	}
-	if name == "" {
-		name = iconName
-	}
+	name := sniIconName(v.Online, absPNG)
 	pm := sniPixmaps(v.Online)
 	itemSpec := map[string]map[string]*prop.Prop{
 		itemIface: {
@@ -404,10 +398,7 @@ func (it *sniItem) refresh() {
 
 	menuChanged := it.menu.rebuild(v)
 	pm := sniPixmaps(v.Online)
-	name := iconFile(v.Online)
-	if name == "" {
-		name = iconName
-	}
+	name := sniIconName(v.Online, "")
 	if it.props != nil {
 		_ = it.props.Set(itemIface, "Title", dbus.MakeVariant(v.Title))
 		if iconChanged {
@@ -438,6 +429,18 @@ func nameOwner(conn *dbus.Conn, name string) string {
 		return ""
 	}
 	return owner
+}
+
+// sniIconName prefers an absolute PNG path (Cinnamon loads files when the
+// name contains "/"). An empty name lets xapp-sn-watcher fall back to IconPixmap.
+func sniIconName(online bool, absPNG string) string {
+	if p := iconFile(online); p != "" {
+		return p
+	}
+	if absPNG != "" {
+		return absPNG
+	}
+	return ""
 }
 
 func sniPixmaps(online bool) []pixmap {

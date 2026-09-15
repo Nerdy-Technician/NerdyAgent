@@ -23,7 +23,7 @@ import (
 )
 
 // Version is overridden by -ldflags at build time.
-var Version = "0.3.10.2"
+var Version = "0.3.10.3"
 
 type agentFileLog struct {
 	path string

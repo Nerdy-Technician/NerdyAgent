@@ -61,7 +61,7 @@ The agent reads its configuration from `config.json`. All fields are optional ex
 | `deviceId` | int | `0` | Device ID assigned by the server after registration. Set automatically. |
 | `token` | string | — | Per-device auth token assigned by the server after registration. Set automatically. |
 | `checkinEvery` | duration | `30s` | How often the agent checks in with the server (e.g. `"60s"`, `"5m"`). |
-| `agentVersion` | string | `0.3.10.2` | Reported agent version. Bumped automatically on a successful self-update. |
+| `agentVersion` | string | `0.3.10.3` | Reported agent version. Bumped automatically on a successful self-update. |
 | `jobTimeoutSec` | int | `120` | Maximum seconds a single job (command/script) may run before being killed. |
 | `outputMaxBytes` | int | `131072` | Maximum bytes of output captured per job (128 KB). Excess is truncated. |
 
@@ -144,7 +144,7 @@ A successful update:
 5. Writes **only** `agentVersion` in `config.json` — `deviceId`, `token`, and `serverUrl` stay put
 6. Restarts the detected systemd unit (`nerdyrmm-agent` or `nerdyagent`)
 
-One-shot (after 0.3.10.2 is already installed):
+One-shot (after 0.3.10.3 is already installed):
 
 ```bash
 sudo /opt/nerdyrmm/nerdyrmm-agent --self-update
@@ -156,7 +156,7 @@ sudo /usr/local/bin/nerdyagent --self-update
 
 `nerdyrmm-agent --tray` (or the `nerdyrmm-agent-tray-*` release asset, same binary) shows a StatusNotifier / AppIndicator icon in the **user** graphical session.
 
-- Icon is the NerdyRMM favicon (`internal/tray/favicon.png`): square-cropped, scaled to 22 and 32px with transparency. The tray installs real PNGs under hicolor/pixmaps and sets `IconName` to that absolute path (what xapp-sn-watcher prefers). `IconPixmap` is also sent as network-endian ARGB32 (`A,R,G,B`) for hosts that use pixmaps. Tiny green/red badge only; no `network-idle` theme icon.
+- Icon is the NerdyRMM favicon (`internal/tray/favicon.png`): tight square crop of the 366×317 RGBA mark (transparency preserved; black outlines kept), bilinear-scaled to **22 and 32px**. The tray installs those PNGs under hicolor (`22x22`/`32x32`) and pixmaps, writes `index.theme` when missing, and sets `IconName` to the absolute 32px PNG path (Cinnamon/xapp-sn-watcher load file paths). `IconPixmap` is also sent as `a(iiay)` **network-endian ARGB32** (`A,R,G,B` — what xapp rotates into GdkPixbuf RGBA). Tiny green/red badge only; generated blue square only if PNG decode fails.
 - Reads `/etc/nerdyrmm-agent/status.json` or `/etc/nerdyagent/status.json` (no token)
 - Tooltip and menu show running + last check-in + server URL. Clicks do **not** call `notify-send`; D-Bus `NewToolTip` / `LayoutUpdated` only fire when the view actually changes.
 - Menu: open docs, open status file, quit tray (does **not** stop the agent service)
@@ -185,10 +185,10 @@ Live layout on Asgard:
 | Unit | `nerdyrmm-agent.service` |
 | Server | `https://rmm-api.nerdytech.dev` |
 
-Hosts already on 0.3.10 / 0.3.10.1 from this PR should move to **0.3.10.2** (Cinnamon favicon + no notification spam). After `v0.3.10.2` is on GitHub (merge this branch, then the main/tag release workflow):
+Hosts already on 0.3.10–0.3.10.2 from this PR should move to **0.3.10.3** (tight favicon crop + Cinnamon IconName/ARGB32). After `v0.3.10.3` is on GitHub (merge this branch, then the main/tag release workflow):
 
 ```bash
-sudo AGENT_VERSION=0.3.10.2 bash -c '
+sudo AGENT_VERSION=0.3.10.3 bash -c '
   curl -fsSL -o /tmp/upgrade-inplace.sh \
     https://raw.githubusercontent.com/Nerdy-Technician/NerdyAgent/main/scripts/upgrade-inplace.sh
   bash /tmp/upgrade-inplace.sh
@@ -204,7 +204,7 @@ sudo ./scripts/upgrade-inplace.sh ./nerdyrmm-agent-linux-amd64
 Manual equivalent (do **not** rewrite config.json except `agentVersion`). Restart the user-session tray after replacing the binary — the old `--tray` process keeps the mapped image until killed:
 
 ```bash
-TAG=v0.3.10.2
+TAG=v0.3.10.3
 curl -fsSL -o /tmp/nerdyrmm-agent-linux-amd64 \
   https://github.com/Nerdy-Technician/NerdyAgent/releases/download/${TAG}/nerdyrmm-agent-linux-amd64
 curl -fsSL -o /tmp/SHA256SUMS \
@@ -223,7 +223,7 @@ with open(path) as f:
     cfg = json.load(f)
 assert cfg.get("deviceId"), "deviceId missing — abort"
 assert cfg.get("token"), "token missing — abort"
-cfg["agentVersion"] = "0.3.10.2"
+cfg["agentVersion"] = "0.3.10.3"
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")

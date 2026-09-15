@@ -31,6 +31,7 @@ type preparedIcons struct {
 	pngPath   map[bool]string
 	pngBytes  map[bool][]byte // 32px PNG
 	images    map[bool]*image.RGBA
+	cropped   *image.RGBA // unbadged square crop; scale 22/32 from this
 	pixmaps   map[bool][]pixmapDesc
 }
 
@@ -91,6 +92,7 @@ func buildPreparedIcons() preparedIcons {
 		base = fallbackSquare(64)
 	}
 	cropped := squareCropLogo(base)
+	out.cropped = cropped
 	for _, online := range []bool{true, false} {
 		var pms []pixmapDesc
 		for _, sz := range iconSizes {
@@ -131,19 +133,115 @@ func fallbackSquare(size int) *image.RGBA {
 	return img
 }
 
-// squareCropLogo flood-fills near-black backdrop from the edges (keeps the NR
-// mark), then square-crops the remaining opaque bounds with a little padding.
+// squareCropLogo returns a tight square crop of the NR mark with transparency
+// preserved. The NerdyRMM favicon is already RGBA (366×317) with a transparent
+// backdrop — we crop to the opaque bounding box and pad the shorter side.
+// Near-black flood-fill is only used when the source is essentially opaque
+// (otherwise it eats the black letter outlines that connect to the backdrop).
 func squareCropLogo(src *image.RGBA) *image.RGBA {
+	if src == nil {
+		return fallbackSquare(64)
+	}
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	alpha := make([]uint8, w*h)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			p := src.RGBAAt(b.Min.X+x, b.Min.Y+y)
-			alpha[y*w+x] = p.A
+	if w <= 0 || h <= 0 {
+		return src
+	}
+
+	work := src
+	if opaqueRatio(src) > 0.95 {
+		work = punchBackdrop(src)
+	}
+
+	minX, minY, maxX, maxY, ok := opaqueBounds(work, 16)
+	if !ok {
+		return work
+	}
+	bw, bh := maxX-minX+1, maxY-minY+1
+	side := bw
+	if bh > side {
+		side = bh
+	}
+	// 1px pad only — extra percent-padding made the 22/32px tray mark tiny.
+	side += 2
+	cx := (minX + maxX) / 2
+	cy := (minY + maxY) / 2
+	x0 := cx - side/2
+	y0 := cy - side/2
+
+	dst := image.NewRGBA(image.Rect(0, 0, side, side))
+	wb := work.Bounds()
+	ww, wh := wb.Dx(), wb.Dy()
+	for y := 0; y < side; y++ {
+		for x := 0; x < side; x++ {
+			sx, sy := x0+x, y0+y
+			if sx < 0 || sy < 0 || sx >= ww || sy >= wh {
+				continue
+			}
+			p := work.RGBAAt(wb.Min.X+sx, wb.Min.Y+sy)
+			if p.A == 0 {
+				p.R, p.G, p.B = 0, 0, 0
+			}
+			dst.SetRGBA(x, y, p)
 		}
 	}
-	// Flood-fill backdrop from the border so interior black in the glyph stays.
+	return dst
+}
+
+func opaqueRatio(src *image.RGBA) float64 {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w*h == 0 {
+		return 0
+	}
+	opaque := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if src.RGBAAt(b.Min.X+x, b.Min.Y+y).A >= 16 {
+				opaque++
+			}
+		}
+	}
+	return float64(opaque) / float64(w*h)
+}
+
+func opaqueBounds(src *image.RGBA, minA uint8) (minX, minY, maxX, maxY int, ok bool) {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	minX, minY, maxX, maxY = w, h, -1, -1
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if src.RGBAAt(b.Min.X+x, b.Min.Y+y).A < minA {
+				continue
+			}
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	return minX, minY, maxX, maxY, maxX >= minX
+}
+
+// punchBackdrop flood-fills near-black / transparent edge pixels so a fully
+// opaque screenshot-style favicon still gets a transparent square crop.
+func punchBackdrop(src *image.RGBA) *image.RGBA {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.SetRGBA(x, y, src.RGBAAt(b.Min.X+x, b.Min.Y+y))
+		}
+	}
 	vis := make([]bool, w*h)
 	type pt struct{ x, y int }
 	q := make([]pt, 0, w+h)
@@ -155,12 +253,12 @@ func squareCropLogo(src *image.RGBA) *image.RGBA {
 		if vis[i] {
 			return
 		}
-		p := src.RGBAAt(b.Min.X+x, b.Min.Y+y)
+		p := dst.RGBAAt(x, y)
 		if !isBackdrop(p) {
 			return
 		}
 		vis[i] = true
-		alpha[i] = 0
+		dst.SetRGBA(x, y, color.RGBA{})
 		q = append(q, pt{x, y})
 	}
 	for x := 0; x < w; x++ {
@@ -178,60 +276,6 @@ func squareCropLogo(src *image.RGBA) *image.RGBA {
 		push(p.x+1, p.y)
 		push(p.x, p.y-1)
 		push(p.x, p.y+1)
-	}
-
-	minX, minY, maxX, maxY := w, h, -1, -1
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			if alpha[y*w+x] < 16 {
-				continue
-			}
-			if x < minX {
-				minX = x
-			}
-			if y < minY {
-				minY = y
-			}
-			if x > maxX {
-				maxX = x
-			}
-			if y > maxY {
-				maxY = y
-			}
-		}
-	}
-	if maxX < minX {
-		return src
-	}
-	bw, bh := maxX-minX+1, maxY-minY+1
-	side := bw
-	if bh > side {
-		side = bh
-	}
-	pad := side / 10
-	if pad < 2 {
-		pad = 2
-	}
-	side += pad * 2
-	cx := (minX + maxX) / 2
-	cy := (minY + maxY) / 2
-	x0 := cx - side/2
-	y0 := cy - side/2
-
-	dst := image.NewRGBA(image.Rect(0, 0, side, side))
-	for y := 0; y < side; y++ {
-		for x := 0; x < side; x++ {
-			sx, sy := x0+x, y0+y
-			if sx < 0 || sy < 0 || sx >= w || sy >= h {
-				continue
-			}
-			p := src.RGBAAt(b.Min.X+sx, b.Min.Y+sy)
-			p.A = alpha[sy*w+sx]
-			if p.A == 0 {
-				p.R, p.G, p.B = 0, 0, 0
-			}
-			dst.SetRGBA(x, y, p)
-		}
 	}
 	return dst
 }
@@ -296,16 +340,27 @@ func sampleBilinear(src *image.RGBA, x, y float64) color.RGBA {
 }
 
 func lerpRGBA(a, b color.RGBA, t float64) color.RGBA {
-	return color.RGBA{
-		R: lerpU8(a.R, b.R, t),
-		G: lerpU8(a.G, b.G, t),
-		B: lerpU8(a.B, b.B, t),
-		A: lerpU8(a.A, b.A, t),
+	// Premultiplied lerp avoids dark fringes around the transparent NR edges.
+	fa := float64(a.A)
+	fb := float64(b.A)
+	aa := fa*(1-t) + fb*t
+	if aa < 0.5 {
+		return color.RGBA{}
 	}
+	r := (float64(a.R)*fa*(1-t) + float64(b.R)*fb*t) / aa
+	g := (float64(a.G)*fa*(1-t) + float64(b.G)*fb*t) / aa
+	bl := (float64(a.B)*fa*(1-t) + float64(b.B)*fb*t) / aa
+	return color.RGBA{R: clampU8(r), G: clampU8(g), B: clampU8(bl), A: clampU8(aa)}
 }
 
-func lerpU8(a, b uint8, t float64) uint8 {
-	return uint8(float64(a)*(1-t) + float64(b)*t + 0.5)
+func clampU8(v float64) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v + 0.5)
 }
 
 func overlayBadgeRGBA(src *image.RGBA, online bool) *image.RGBA {
@@ -377,7 +432,10 @@ func imageToRGBA(img image.Image) *image.RGBA {
 	return dst
 }
 
-func writeIconPNG(img *image.RGBA, online bool) (absPNG, themeRoot string, err error) {
+func writeIconPNG(cropped *image.RGBA, online bool) (absPNG, themeRoot string, err error) {
+	if cropped == nil {
+		return "", "", os.ErrInvalid
+	}
 	roots := iconInstallRoots()
 	suffix := ""
 	if !online {
@@ -391,12 +449,10 @@ func writeIconPNG(img *image.RGBA, online bool) (absPNG, themeRoot string, err e
 			if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 				continue
 			}
-			scaled := img
-			if img.Bounds().Dx() != sz {
-				scaled = scaleRGBA(img, sz, sz)
-			}
+			scaled := scaleRGBA(cropped, sz, sz)
+			badged := overlayBadgeRGBA(scaled, online)
 			path := filepath.Join(dir, iconName+suffix+".png")
-			if werr := encodePNG(path, scaled); werr != nil {
+			if werr := encodePNG(path, badged); werr != nil {
 				continue
 			}
 			if sz == iconSize && firstPNG == "" {
@@ -409,13 +465,28 @@ func writeIconPNG(img *image.RGBA, online bool) (absPNG, themeRoot string, err e
 			pixmaps = "/usr/share/pixmaps"
 		}
 		_ = os.MkdirAll(pixmaps, 0o755)
-		_ = encodePNG(filepath.Join(pixmaps, iconName+suffix+".png"), img)
-		updateIconCache(filepath.Join(root, "hicolor"))
+		pix := overlayBadgeRGBA(scaleRGBA(cropped, iconSize, iconSize), online)
+		_ = encodePNG(filepath.Join(pixmaps, iconName+suffix+".png"), pix)
+		hicolor := filepath.Join(root, "hicolor")
+		writeHicolorIndex(hicolor)
+		updateIconCache(hicolor)
 	}
 	if firstPNG == "" {
 		return "", "", os.ErrPermission
 	}
 	return firstPNG, firstTheme, nil
+}
+
+func writeHicolorIndex(hicolor string) {
+	path := filepath.Join(hicolor, "index.theme")
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	_ = os.MkdirAll(hicolor, 0o755)
+	body := "[Icon Theme]\nName=Hicolor\nComment=Fallback icon theme\nHidden=true\nDirectories=22x22/apps,32x32/apps\n\n" +
+		"[22x22/apps]\nSize=22\nContext=Applications\nType=Fixed\n\n" +
+		"[32x32/apps]\nSize=32\nContext=Applications\nType=Fixed\n"
+	_ = os.WriteFile(path, []byte(body), 0o644)
 }
 
 func iconInstallRoots() []string {
@@ -484,7 +555,11 @@ func InstallThemeIcons() (absPNG, themeRoot string, err error) {
 		if img == nil {
 			continue
 		}
-		path, theme, werr := writeIconPNG(img, online)
+		src := prepared.cropped
+		if src == nil {
+			src = img
+		}
+		path, theme, werr := writeIconPNG(src, online)
 		if werr != nil {
 			err = werr
 			continue

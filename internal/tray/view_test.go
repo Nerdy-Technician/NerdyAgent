@@ -18,7 +18,7 @@ func TestLoadViewUsesSnapshotWithoutSecrets(t *testing.T) {
 	}
 	t.Setenv("NRMM_AGENT_CONFIG", cfg)
 	if err := status.WriteSnapshot(cfg, status.Snapshot{
-		Version:       "0.3.10.2",
+		Version:       "0.3.10.3",
 		LastCheckinOK: true,
 		LastCheckin:   "2026-09-14T12:00:00Z",
 		ServerURL:     "https://rmm-api.nerdytech.dev",
@@ -28,7 +28,7 @@ func TestLoadViewUsesSnapshotWithoutSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := loadView()
-	if !v.Online || !strings.Contains(v.Title, "0.3.10.2") {
+	if !v.Online || !strings.Contains(v.Title, "0.3.10.3") {
 		t.Fatalf("view = %+v", v)
 	}
 	blob := v.Title + v.Status + v.Detail
@@ -67,7 +67,7 @@ func TestIconPixmapFaviconSizesAndARGB(t *testing.T) {
 	}
 
 	// Network-endian ARGB32: fully transparent pixels are 00 00 00 00, not RGBA.
-	// After square-crop + backdrop punch, corners of the 32px icon should be transparent.
+	// After square-crop the wide NR logo is vertically padded, so corners stay clear.
 	w, h, data := iconPixmap(true)
 	if w != 32 || h != 32 {
 		t.Fatalf("default pixmap %dx%d", w, h)
@@ -80,15 +80,48 @@ func TestIconPixmapFaviconSizesAndARGB(t *testing.T) {
 	// A red-ish pixel from the R should have A high and R > B if format is A,R,G,B
 	// (not B,G,R,A which would put blue in the R slot).
 	var foundNR bool
+	var foundBlueFallback int
+	var opaque int
+	minOpaqueX, maxOpaqueX := 32, -1
 	for i := 0; i < len(on); i += 4 {
 		a, r, g, b := on[i], on[i+1], on[i+2], on[i+3]
+		px := (i / 4) % 32
+		if a > 16 {
+			opaque++
+			if px < minOpaqueX {
+				minOpaqueX = px
+			}
+			if px > maxOpaqueX {
+				maxOpaqueX = px
+			}
+		}
 		if a > 200 && r > 150 && r > g && r > b {
 			foundNR = true
-			break
+		}
+		if a > 200 && r == 30 && g == 136 && b == 229 {
+			foundBlueFallback++
 		}
 	}
 	if !foundNR {
 		t.Fatal("did not find a red ARGB pixel from the NR mark; byte order may be wrong")
+	}
+	if foundBlueFallback > 8 {
+		t.Fatalf("icon used the blue fallback square (%d pixels)", foundBlueFallback)
+	}
+	if opaque < 200 {
+		t.Fatalf("32px icon too empty after crop (opaque=%d); logo is not filling the tray slot", opaque)
+	}
+	if minOpaqueX > 2 || maxOpaqueX < 29 {
+		t.Fatalf("NR mark does not span the 32px width (x=%d..%d); crop is over-padded", minOpaqueX, maxOpaqueX)
+	}
+
+	ensurePrepared()
+	if prepared.cropped == nil {
+		t.Fatal("missing square crop")
+	}
+	side := prepared.cropped.Bounds().Dx()
+	if side < 350 || side > 380 {
+		t.Fatalf("crop side=%d, want ~359 (alpha bbox of 366x317 favicon), not a padded 420 canvas", side)
 	}
 }
 
@@ -109,6 +142,22 @@ func TestInstallThemeIconsWritesPNG(t *testing.T) {
 	}
 	if !bytes.HasPrefix(b, []byte{0x89, 'P', 'N', 'G'}) {
 		t.Fatal("installed icon is not PNG")
+	}
+	small := filepath.Join(dir, "share", "icons", "hicolor", "22x22", "apps", "nerdyrmm-agent.png")
+	if _, err := os.Stat(small); err != nil {
+		t.Fatalf("missing 22px hicolor icon: %v", err)
+	}
+	idx := filepath.Join(dir, "share", "icons", "hicolor", "index.theme")
+	idxb, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatalf("missing hicolor index.theme: %v", err)
+	}
+	if !strings.Contains(string(idxb), "32x32/apps") {
+		t.Fatalf("index.theme missing size dirs: %s", idxb)
+	}
+	pix := filepath.Join(dir, "share", "pixmaps", "nerdyrmm-agent.png")
+	if _, err := os.Stat(pix); err != nil {
+		t.Fatalf("missing pixmaps icon: %v", err)
 	}
 }
 
