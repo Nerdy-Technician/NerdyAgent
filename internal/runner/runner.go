@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nerdyrmm/agent/internal/paths"
 	"github.com/nerdyrmm/agent/internal/protocol"
+	"github.com/nerdyrmm/agent/internal/updater"
 )
 
 type Config struct {
@@ -293,195 +294,20 @@ func trimOutput(s string, max int) string {
 }
 
 func updateAgentBinary(ctx context.Context, payload map[string]interface{}, cfg Config) (string, string) {
-	targetVersion, _ := payload["version"].(string)
-	targetVersion = strings.TrimSpace(targetVersion)
-	if targetVersion == "" {
-		return "failed", "missing target version"
+	req := updater.PayloadFromMap(payload)
+	req.CurrentVersion = cfg.CurrentVersion
+	req.ConfigPath = cfg.ConfigPath
+	req.ServerURL = cfg.ServerURL
+	req.OutputMaxBytes = cfg.OutputMaxBytes
+	if cfg.TimeoutSec > 0 {
+		req.Timeout = time.Duration(cfg.TimeoutSec) * time.Second
 	}
-	if compareVersions(cfg.CurrentVersion, targetVersion) >= 0 {
-		return "success", fmt.Sprintf("agent already at %s", cfg.CurrentVersion)
-	}
-
-	binaryURL, _ := payload["binaryUrl"].(string)
-	binaryURL = strings.TrimSpace(binaryURL)
-	if binaryURL == "" {
-		return "failed", "missing binary URL"
-	}
-	serviceName, _ := payload["serviceName"].(string)
-	serviceName = strings.TrimSpace(serviceName)
-	if serviceName == "" {
-		serviceName = AgentServiceName()
-	}
-
-	if runtime.GOOS == "windows" {
-		return updateAgentBinaryWindows(ctx, payload, cfg, serviceName)
-	}
-
-	candidateURLs := []string{binaryURL}
-	if fallbackURL := buildFallbackBinaryURL(binaryURL, cfg.ServerURL); fallbackURL != "" && fallbackURL != binaryURL {
-		candidateURLs = append(candidateURLs, fallbackURL)
-	}
-	resp, sourceURL, downloadErr := downloadBinaryFromCandidates(ctx, candidateURLs)
-	if downloadErr != nil {
-		return "failed", downloadErr.Error()
-	}
-	defer resp.Body.Close()
-
-	exePath, err := os.Executable()
-	if err != nil {
-		return "failed", err.Error()
-	}
-	tmpPath := exePath + ".new"
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return "failed", err.Error()
-	}
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return "failed", err.Error()
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "failed", err.Error()
-	}
-	_ = os.Chmod(tmpPath, 0o755)
-
-	bakPath := exePath + ".bak"
-	_ = os.Remove(bakPath)
-	if err := os.Rename(exePath, bakPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "failed", fmt.Sprintf("backup current binary failed: %v", err)
-	}
-	if err := os.Rename(tmpPath, exePath); err != nil {
-		_ = os.Rename(bakPath, exePath)
-		_ = os.Remove(tmpPath)
-		return "failed", fmt.Sprintf("activate updated binary failed: %v", err)
-	}
-	_ = os.Remove(bakPath)
-	_ = writeAgentVersionToConfig(cfg.ConfigPath, targetVersion)
-
-	restartCmd := serviceRestartCommand(serviceName, exePath)
-	_, restartOut := execShell(context.Background(), restartCmd, cfg.OutputMaxBytes)
-	msg := fmt.Sprintf("updated agent binary to %s from %s; service restart scheduled", targetVersion, sourceURL)
-	if strings.TrimSpace(restartOut) != "" {
-		msg = msg + "\n" + restartOut
-	}
-	return "success", msg
-}
-
-func updateAgentBinaryWindows(ctx context.Context, payload map[string]interface{}, cfg Config, serviceName string) (string, string) {
-	targetVersion, _ := payload["version"].(string)
-	targetVersion = strings.TrimSpace(targetVersion)
-	if targetVersion == "" {
-		return "failed", "missing target version"
-	}
-	if compareVersions(cfg.CurrentVersion, targetVersion) >= 0 {
-		return "success", fmt.Sprintf("agent already at %s", cfg.CurrentVersion)
-	}
-	binaryURL, _ := payload["binaryUrl"].(string)
-	binaryURL = strings.TrimSpace(binaryURL)
-	if binaryURL == "" {
-		return "failed", "missing binary URL"
-	}
-	candidateURLs := []string{binaryURL}
-	if fallbackURL := buildFallbackBinaryURL(binaryURL, cfg.ServerURL); fallbackURL != "" && fallbackURL != binaryURL {
-		candidateURLs = append(candidateURLs, fallbackURL)
-	}
-	resp, sourceURL, downloadErr := downloadBinaryFromCandidates(ctx, candidateURLs)
-	if downloadErr != nil {
-		return "failed", downloadErr.Error()
-	}
-	defer resp.Body.Close()
-
-	exePath, err := os.Executable()
-	if err != nil {
-		return "failed", err.Error()
-	}
-	tmpPath := exePath + ".new"
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return "failed", err.Error()
-	}
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return "failed", err.Error()
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "failed", err.Error()
-	}
-
-	psScriptPath := filepath.Join(os.TempDir(), "nerdyrmm-agent-self-update.ps1")
-	psScript := fmt.Sprintf(`$ErrorActionPreference='SilentlyContinue'
-Start-Sleep -Seconds 2
-Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-Move-Item -Path '%s' -Destination '%s' -Force
-Start-Service -Name '%s'
-`, serviceName, strings.ReplaceAll(tmpPath, `'`, `''`), strings.ReplaceAll(exePath, `'`, `''`), serviceName)
-	if err := os.WriteFile(psScriptPath, []byte(psScript), 0o600); err != nil {
-		return "failed", err.Error()
-	}
-	launcher := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psScriptPath)
-	if err := launcher.Start(); err != nil {
-		return "failed", fmt.Sprintf("failed to schedule windows service restart: %v", err)
-	}
-	_ = writeAgentVersionToConfig(cfg.ConfigPath, targetVersion)
-	return "success", fmt.Sprintf("updated agent binary to %s from %s; service restart scheduled", targetVersion, sourceURL)
-}
-
-func downloadBinaryFromCandidates(ctx context.Context, candidates []string) (*http.Response, string, error) {
-	errs := make([]string, 0, len(candidates))
-	for _, rawURL := range candidates {
-		urlText := strings.TrimSpace(rawURL)
-		if urlText == "" {
-			continue
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlText, nil)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", urlText, err))
-			continue
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", urlText, err))
-			continue
-		}
-		if resp.StatusCode >= 300 {
-			_ = resp.Body.Close()
-			errs = append(errs, fmt.Sprintf("%s: status %d", urlText, resp.StatusCode))
-			continue
-		}
-		return resp, urlText, nil
-	}
-	if len(errs) == 0 {
-		return nil, "", fmt.Errorf("download failed: no candidate URLs")
-	}
-	return nil, "", fmt.Errorf("download failed: %s", strings.Join(errs, " | "))
-}
-
-func buildFallbackBinaryURL(binaryURL, serverURL string) string {
-	serverURL = strings.TrimRight(strings.TrimSpace(serverURL), "/")
-	if serverURL == "" {
-		return ""
-	}
-	binaryURL = strings.TrimSpace(binaryURL)
-	if binaryURL == "" {
-		return ""
-	}
-	parts := strings.Split(binaryURL, "/")
-	fileName := strings.TrimSpace(parts[len(parts)-1])
-	if fileName == "" {
-		return ""
-	}
-	return serverURL + "/downloads/" + fileName
+	return updater.Apply(ctx, req)
 }
 
 // CompareVersions is the exported form of compareVersions for use by the version watcher.
 func CompareVersions(current, target string) int {
-	return compareVersions(current, target)
+	return updater.CompareVersions(current, target)
 }
 
 // RunUpdateAgent runs an update_agent job payload directly (used by the version watcher goroutine).
@@ -493,119 +319,12 @@ func RunUpdateAgent(payload map[string]interface{}, cfg Config) (string, string)
 
 // AgentBinaryFilename returns the expected agent binary filename for the current OS/arch.
 func AgentBinaryFilename() string {
-	if runtime.GOOS == "windows" {
-		return "nerdyrmm-agent-windows-amd64.exe"
-	}
-	switch runtime.GOARCH {
-	case "arm64":
-		return "nerdyrmm-agent-linux-arm64"
-	case "arm":
-		return "nerdyrmm-agent-linux-armv7"
-	default:
-		return "nerdyrmm-agent-linux-amd64"
-	}
+	return updater.AgentBinaryFilename()
 }
 
-// AgentServiceName returns the service name used by the install scripts.
+// AgentServiceName returns the systemd/Windows service name for this install.
 func AgentServiceName() string {
-	if runtime.GOOS == "windows" {
-		return "NerdyAgent"
-	}
-	return "nerdyagent"
-}
-
-func compareVersions(current, target string) int {
-	a := parseVersionParts(current)
-	b := parseVersionParts(target)
-	maxLen := len(a)
-	if len(b) > maxLen {
-		maxLen = len(b)
-	}
-	for i := 0; i < maxLen; i++ {
-		av := 0
-		if i < len(a) {
-			av = a[i]
-		}
-		bv := 0
-		if i < len(b) {
-			bv = b[i]
-		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-	}
-	return 0
-}
-
-func parseVersionParts(v string) []int {
-	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(v), "v"))
-	if trimmed == "" {
-		return []int{0}
-	}
-	parts := strings.Split(trimmed, ".")
-	out := make([]int, 0, len(parts))
-	for _, part := range parts {
-		digits := make([]rune, 0, len(part))
-		for _, r := range part {
-			if r >= '0' && r <= '9' {
-				digits = append(digits, r)
-			} else {
-				break
-			}
-		}
-		if len(digits) == 0 {
-			out = append(out, 0)
-			continue
-		}
-		n := 0
-		for _, r := range digits {
-			n = n*10 + int(r-'0')
-		}
-		out = append(out, n)
-	}
-	return out
-}
-
-func writeAgentVersionToConfig(configPath, version string) error {
-	configPath = strings.TrimSpace(configPath)
-	if configPath == "" || strings.TrimSpace(version) == "" {
-		return nil
-	}
-	b, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	m := map[string]interface{}{}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return err
-	}
-	m["agentVersion"] = version
-	out, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	out = append(out, '\n')
-	return os.WriteFile(configPath, out, 0o600)
-}
-
-// serviceRestartCommand builds a restart snippet that works across distros.
-func serviceRestartCommand(serviceName, exePath string) string {
-	service := shellEscape(serviceName)
-	exe := shellEscape(exePath)
-	pathExport := "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-	return fmt.Sprintf(`(sleep 2;
-%s;
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl restart %s
-elif command -v service >/dev/null 2>&1; then
-  service %s restart
-else
-  pkill -f %s >/dev/null 2>&1 || true
-  nohup %s >/tmp/nerdyrmm-agent-manual-restart.log 2>&1 &
-fi) >/tmp/nerdyrmm-agent-update.log 2>&1 &`, pathExport, service, service, exe, exe)
+	return paths.CachedServiceName()
 }
 
 // shellEscape wraps values for safe use in shell snippets.

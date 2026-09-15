@@ -2,22 +2,28 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/nerdyrmm/agent/internal/config"
+	"github.com/nerdyrmm/agent/internal/paths"
 	"github.com/nerdyrmm/agent/internal/protocol"
 	"github.com/nerdyrmm/agent/internal/runner"
 	"github.com/nerdyrmm/agent/internal/status"
 	"github.com/nerdyrmm/agent/internal/sysinfo"
+	"github.com/nerdyrmm/agent/internal/tray"
 	"github.com/nerdyrmm/agent/internal/tunnel"
+	"github.com/nerdyrmm/agent/internal/updater"
 )
+
+// Version is overridden by -ldflags at build time.
+var Version = "0.3.10"
 
 type agentFileLog struct {
 	path string
@@ -50,12 +56,36 @@ func (l *agentFileLog) writef(format string, args ...interface{}) {
 }
 
 func main() {
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "--tray", "tray":
+			if err := tray.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "tray: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "--version", "version", "-v":
+			fmt.Println(Version)
+			return
+		case "--self-update", "self-update":
+			if err := runSelfUpdateOnce(); err != nil {
+				fmt.Fprintf(os.Stderr, "self-update: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "--help", "help", "-h":
+			printUsage()
+			return
+		}
+	}
+
 	cfgPath := defaultConfigPath()
 	if v := os.Getenv("NRMM_AGENT_CONFIG"); v != "" {
 		cfgPath = v
 	}
 	fileLog := newAgentFileLog(cfgPath)
-	fileLog.writef("agent bootstrap started; cfg=%s", cfgPath)
+	fileLog.writef("agent bootstrap started; cfg=%s version=%s", cfgPath, Version)
 	defer func() {
 		if r := recover(); r != nil {
 			fileLog.writef("agent panic: %v", r)
@@ -76,83 +106,103 @@ func main() {
 	runAgent(cfgPath, fileLog)
 }
 
+func printUsage() {
+	fmt.Printf(`NerdyAgent %s
+
+Usage:
+  nerdyrmm-agent                 Run the RMM agent (systemd / Windows service)
+  nerdyrmm-agent --tray          Linux system tray (user graphical session)
+  nerdyrmm-agent --self-update   Poll server/GitHub and apply a newer build
+  nerdyrmm-agent --version       Print version
+
+Config: NRMM_AGENT_CONFIG or first existing of
+  /etc/nerdyrmm-agent/config.json  (Asgard / legacy)
+  /etc/nerdyagent/config.json      (README layout)
+`, Version)
+}
+
 func defaultConfigPath() string {
-	cfgPath := "/etc/nerdyrmm-agent/config.json"
-	if runtime.GOOS == "windows" {
-		programData := os.Getenv("ProgramData")
-		if strings.TrimSpace(programData) == "" {
-			programData = `C:\ProgramData`
-		}
-		cfgPath = filepath.Join(programData, "NerdyRMM", "config.json")
-	}
-	return cfgPath
+	return paths.ConfigFile()
 }
 
-const (
-	githubReleasesAPI  = "https://api.github.com/repos/Nerdy-Technician/NerdyAgent/releases/latest"
-	githubDownloadBase = "https://github.com/Nerdy-Technician/NerdyAgent/releases/download"
-	forceUpdateEvery   = 12 * time.Hour
-)
-
-func fetchGitHubLatestVersion() (version string, err error) {
-	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", githubReleasesAPI, nil)
+func runSelfUpdateOnce() error {
+	cfgPath := defaultConfigPath()
+	if v := os.Getenv("NRMM_AGENT_CONFIG"); v != "" {
+		cfgPath = v
+	}
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return "", err
+		return err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "NerdyAgent-updater")
-	resp, err := client.Do(req)
+	if strings.TrimSpace(cfg.AgentVersion) == "" {
+		cfg.AgentVersion = Version
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rel, err := updater.Discover(ctx, cfg.AgentVersion, updater.DiscoverConfig{
+		ServerURL:  cfg.ServerURL,
+		Token:      cfg.Token,
+		GitHubRepo: os.Getenv("NRMM_AGENT_GITHUB_REPO"),
+	})
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer resp.Body.Close()
-	var release struct {
-		TagName string `json:"tag_name"`
+	if updater.CompareVersions(cfg.AgentVersion, rel.Version) >= 0 {
+		fmt.Printf("already up to date (%s)\n", cfg.AgentVersion)
+		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
+	st, out := updater.Apply(ctx, updater.ApplyRequest{
+		Version:        rel.Version,
+		BinaryURL:      rel.BinaryURL,
+		SHA256:         rel.SHA256,
+		ServiceName:    rel.ServiceName,
+		ConfigPath:     cfgPath,
+		CurrentVersion: cfg.AgentVersion,
+		ServerURL:      cfg.ServerURL,
+		Timeout:        5 * time.Minute,
+		OutputMaxBytes: 65536,
+	})
+	fmt.Printf("%s: %s\n", st, out)
+	if st != "success" {
+		return fmt.Errorf("%s", out)
 	}
-	v := strings.TrimPrefix(strings.TrimSpace(release.TagName), "v")
-	if v == "" {
-		return "", fmt.Errorf("empty tag_name")
-	}
-	return v, nil
-}
-
-func githubBinaryURL(version string) string {
-	tag := "v" + version
-	return githubDownloadBase + "/" + tag + "/" + runner.AgentBinaryFilename()
+	return nil
 }
 
 func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	lastForced := time.Now()
 	for range ticker.C {
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
 			continue
 		}
-		latestVersion, err := fetchGitHubLatestVersion()
+		if strings.TrimSpace(cfg.AgentVersion) == "" {
+			cfg.AgentVersion = Version
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		rel, err := updater.Discover(ctx, cfg.AgentVersion, updater.DiscoverConfig{
+			ServerURL:  cfg.ServerURL,
+			Token:      cfg.Token,
+			GitHubRepo: os.Getenv("NRMM_AGENT_GITHUB_REPO"),
+		})
+		cancel()
 		if err != nil {
-			fileLog.writef("version watcher: github check failed: %v", err)
+			fileLog.writef("version watcher: discover failed: %v", err)
 			continue
 		}
-		isNewer := runner.CompareVersions(cfg.AgentVersion, latestVersion) < 0
-		forceInstall := time.Since(lastForced) >= forceUpdateEvery
-		if !isNewer && !forceInstall {
+		if updater.CompareVersions(cfg.AgentVersion, rel.Version) >= 0 {
 			continue
 		}
-		reason := "newer version available"
-		if forceInstall && !isNewer {
-			reason = "forced 12h reinstall"
-		}
-		fileLog.writef("version watcher: current=%s latest=%s reason=%s — installing", cfg.AgentVersion, latestVersion, reason)
+		fileLog.writef("version watcher: current=%s latest=%s source=%s — installing", cfg.AgentVersion, rel.Version, rel.Source)
 		payload := map[string]interface{}{
-			"version":     latestVersion,
-			"binaryUrl":   githubBinaryURL(latestVersion),
-			"serviceName": runner.AgentServiceName(),
+			"version":     rel.Version,
+			"binaryUrl":   rel.BinaryURL,
+			"sha256":      rel.SHA256,
+			"serviceName": rel.ServiceName,
+		}
+		if strings.TrimSpace(rel.ServiceName) == "" {
+			payload["serviceName"] = runner.AgentServiceName()
 		}
 		st, output := runner.RunUpdateAgent(payload, runner.Config{
 			TimeoutSec:     300,
@@ -162,8 +212,29 @@ func runVersionWatcher(cfgPath string, fileLog *agentFileLog) {
 			ServerURL:      cfg.ServerURL,
 		})
 		fileLog.writef("version watcher update result: status=%s output=%s", st, output)
-		lastForced = time.Now()
 	}
+}
+
+func publishStatus(cfgPath string, cfg config.Config, ok bool, errMsg string) {
+	_ = status.WriteSnapshot(cfgPath, status.Snapshot{
+		Version:       firstNonEmpty(cfg.AgentVersion, Version),
+		LastCheckin:   time.Now().UTC().Format(time.RFC3339),
+		LastCheckinOK: ok,
+		LastError:     errMsg,
+		ServerURL:     cfg.ServerURL,
+		DeviceID:      cfg.DeviceID,
+		Service:       runner.AgentServiceName(),
+		ConfigPath:    cfgPath,
+	})
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func runAgent(cfgPath string, fileLog *agentFileLog) {
@@ -172,7 +243,11 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 		fileLog.writef("failed to load config: %v", err)
 		panic(err)
 	}
-	fileLog.writef("config loaded; server=%s deviceId=%d", cfg.ServerURL, cfg.DeviceID)
+	if strings.TrimSpace(cfg.AgentVersion) == "" {
+		cfg.AgentVersion = Version
+	}
+	fileLog.writef("config loaded; server=%s deviceId=%d version=%s", cfg.ServerURL, cfg.DeviceID, cfg.AgentVersion)
+	publishStatus(cfgPath, cfg, false, "")
 
 	go runVersionWatcher(cfgPath, fileLog)
 
@@ -203,12 +278,14 @@ func runAgent(cfgPath string, fileLog *agentFileLog) {
 			statusLog.Write(fmt.Sprintf("checkin failed: %v", err))
 			fileLog.writef("checkin failed: %v", err)
 			fmt.Printf("checkin failed: %v\n", err)
+			publishStatus(cfgPath, cfg, false, err.Error())
 			if backoff < 5*time.Minute {
 				backoff *= 2
 			}
 			time.Sleep(backoff)
 			continue
 		}
+		publishStatus(cfgPath, cfg, true, "")
 		backoff = cfg.CheckinEvery
 		fmt.Printf("checkin success (interval %s)\n", cfg.CheckinEvery)
 		time.Sleep(cfg.CheckinEvery)
@@ -257,7 +334,7 @@ func cycle(cfg config.Config, cfgPath string) (config.Config, error, string) {
 		return cfg, err, ""
 	}
 	for _, j := range out.Jobs {
-		status, output := runner.Run(j, runner.Config{
+		st, output := runner.Run(j, runner.Config{
 			TimeoutSec:     cfg.JobTimeoutSec,
 			OutputMaxBytes: cfg.OutputMaxBytes,
 			CurrentVersion: cfg.AgentVersion,
@@ -268,7 +345,7 @@ func cycle(cfg config.Config, cfgPath string) (config.Config, error, string) {
 			DeviceID: cfg.DeviceID,
 			Token:    cfg.Token,
 			JobID:    j.ID,
-			Status:   status,
+			Status:   st,
 			Output:   output,
 		}
 		jb, _ := json.Marshal(jr)

@@ -3,6 +3,8 @@ dist/
 *.exe
 nerdyagent
 nerdyagent-*
+nerdyrmm-agent
+nerdyrmm-agent.exe
 
 # Config with secrets
 config.json
