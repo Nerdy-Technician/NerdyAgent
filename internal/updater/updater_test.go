@@ -20,8 +20,8 @@ func TestCompareVersionsFourPart(t *testing.T) {
 	if CompareVersions("0.3.10", "0.3.10") != 0 {
 		t.Fatalf("0.3.10 should equal itself")
 	}
-	if CompareVersions("v0.3.10", "0.3.9.5") <= 0 {
-		t.Fatalf("v0.3.10 should be newer than 0.3.9.5")
+	if CompareVersions("0.3.10", "0.3.10.1") >= 0 {
+		t.Fatalf("0.3.10 should be older than 0.3.10.1")
 	}
 }
 

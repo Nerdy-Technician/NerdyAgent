@@ -4,7 +4,6 @@ Name=NerdyRMM Agent
 Comment=NerdyRMM / NerdyAgent status (user session tray)
 TryExec=nerdyrmm-agent
 Exec=nerdyrmm-agent --tray
-Icon=network-idle
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false

@@ -13,7 +13,7 @@ DEVICE_ID="${2:-}"
 TOKEN="${3:-}"
 ENROLLMENT_TOKEN="${4:-${NRMM_TOKEN:-}}"
 GITHUB_REPO="${NRMM_AGENT_GITHUB_REPO:-Nerdy-Technician/NerdyAgent}"
-AGENT_VERSION="${AGENT_VERSION:-0.3.10}"
+AGENT_VERSION="${AGENT_VERSION:-0.3.10.1}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "This installer must be run as root (sudo)." >&2
@@ -147,7 +147,6 @@ Type=Application
 Name=NerdyRMM Agent
 Comment=NerdyRMM / NerdyAgent status (user session tray)
 Exec=$BIN_PATH --tray
-Icon=network-idle
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false

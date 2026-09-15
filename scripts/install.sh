@@ -196,7 +196,6 @@ Type=Application
 Name=NerdyRMM Agent
 Comment=NerdyRMM / NerdyAgent status (user session tray)
 Exec=$exec_line
-Icon=network-idle
 Terminal=false
 Categories=System;Monitor;
 StartupNotify=false

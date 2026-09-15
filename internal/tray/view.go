@@ -75,3 +75,18 @@ func loadView() view {
 	}
 	return v
 }
+
+func (v view) fingerprint() string {
+	on := "0"
+	if v.Online {
+		on = "1"
+	}
+	return on + "\x1e" + v.Title + "\x1e" + v.Status + "\x1e" + v.Detail
+}
+
+func (v view) tooltipText() string {
+	if v.Detail == "" {
+		return v.Status
+	}
+	return v.Status + "\n" + v.Detail
+}
