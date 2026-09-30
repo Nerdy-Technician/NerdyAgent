@@ -7,14 +7,17 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build & test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.24'
           cache: true
@@ -26,7 +29,7 @@ jobs:
         run: make build-all
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nerdyrmm-agent-binaries
           path: dist/
@@ -40,9 +43,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.24'
           cache: true
@@ -70,9 +73,11 @@ jobs:
 
       - name: Verify config.go matches tag
         if: steps.version.outputs.SOURCE == 'tag'
+        env:
+          VERSION_VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           CFG_VERSION=$(sed -nE 's/.*AgentVersion:[[:space:]]*"([^"]+)".*/\1/p' internal/config/config.go | head -n1)
-          TAG_VERSION="${{ steps.version.outputs.VERSION }}"
+          TAG_VERSION="${VERSION_VERSION}"
           if [ -n "$CFG_VERSION" ] && [ "$CFG_VERSION" != "$TAG_VERSION" ]; then
             echo "::warning::config.go AgentVersion ($CFG_VERSION) does not match tag ($TAG_VERSION)"
           fi
@@ -99,7 +104,9 @@ jobs:
 
       - name: Write agent-version.txt
         if: steps.release_state.outputs.SHOULD_RELEASE == 'true'
-        run: echo -n "${{ steps.version.outputs.VERSION }}" > dist/agent-version.txt
+        env:
+          VERSION_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: echo -n "${VERSION_VERSION}" > dist/agent-version.txt
 
       - name: Write SHA256SUMS
         if: steps.release_state.outputs.SHOULD_RELEASE == 'true'
@@ -107,7 +114,7 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.release_state.outputs.SHOULD_RELEASE == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ steps.version.outputs.TAG }}
           target_commitish: ${{ github.sha }}
